@@ -17,7 +17,7 @@ Status: **M0 in progress.**
 | M0 | Bootstrap | Repo docs (PRODUCT, DESIGN, PLAN, CLAUDE) | Done |
 | M1 | Windows daemon | WS server, protocol decode, PadBackend (vigem + mock), watchdog, CLI, tests without Windows | Done |
 | M2 | Browser test client | Static page: Gamepad API to STATE, connection status, live pad view | Not started |
-| M3 | Latency measurement | PING/PONG, HUD stats, daemon histograms, bench script, button-to-photon doc | Not started |
+| M3 | Latency measurement | PING/PONG, HUD stats, daemon histograms, bench script, button-to-photon doc | In progress (tooling done; hardware measurements pending) |
 | M4 | Tizen spike (go/no-go) | Sideloadable app showing HDMI via tvwindow with gamepad overlay; feasibility verdict | Not started |
 | M5 | Tizen client | Real TV app: config, auto-reconnect, HDMI source select, overlay | Not started |
 | M6 | Polish | Rumble, PyInstaller exe + autostart, Linux uinput backend, install guide | Not started |
@@ -65,13 +65,13 @@ virtual pad that shows up in a Windows game controller tester.
 
 ## M3 — Latency measurement
 
-- [ ] PING every 250 ms; PONG handling with `proc_us`
-- [ ] HUD: RTT min/median/p95/p99 and jitter
-- [ ] Daemon recv→apply histogram, periodic and on-exit log summary
-- [ ] `bench/` synthetic client (loopback and LAN, configurable rate)
-- [ ] `docs/latency-testing.md`: 240 fps phone button-to-photon procedure
-- [ ] Baseline run: controller on PC vs ghostpad, with numbers recorded
-- [ ] Test `setInterval`/`MessageChannel` polling against rAF
+- [x] PING every 250 ms; PONG handling with `proc_us`
+- [x] HUD: RTT min/median/p95/p99 and jitter
+- [x] Daemon recv→apply histogram, periodic and on-exit log summary
+- [x] `bench/` synthetic client (loopback and LAN, configurable rate)
+- [x] `docs/latency-testing.md`: 240 fps phone button-to-photon procedure
+- [ ] Baseline run: controller on PC vs ghostpad, with numbers recorded (button-to-photon, needs real hardware; not done)
+- [x] Test `setInterval`/`MessageChannel` polling against rAF (headless, fake gamepad; real-hardware result still open)
 
 Exit criteria: documented numbers show whether median ≤ 5 ms and p99 ≤ 16.7 ms hold on
 wired LAN, with the polling-mitigation result recorded.

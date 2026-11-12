@@ -7,7 +7,7 @@ together. Product scope lives in `PRODUCT.md`, work breakdown in `PLAN.md`.
 
 ```
 controller ──BT/USB──▶ client (TV / browser)
-                        │  Gamepad API, polled on rAF
+                        │  Gamepad API, polled on rAF (or a 4 ms timer)
                         │  STATE on change + 50 ms heartbeat
                         ▼
                  ws://<pc-ip>:47800/ws  (LAN, WebSocket, binary + JSON text)
@@ -46,7 +46,7 @@ Input only. Video and audio never touch the daemon.
 - Only runtime dependency: `vgamepad` (Windows, needs the ViGEmBus driver), imported
   lazily so the daemon runs and tests on any OS with the `mock` backend.
 - Single port, default `47800`:
-  - plain HTTP `GET` serves the static web client from `client/web/`
+  - plain HTTP `GET` serves the static web client from `client/web/`; `GET /stats` returns JSON counters
   - WebSocket upgrade at path `/ws`
 - Bind address configurable, default `0.0.0.0`.
 
@@ -59,7 +59,7 @@ Input only. Video and audio never touch the daemon.
 | `protocol.py` | Binary encode/decode of messages, JSON control messages |
 | `backends/` | `PadBackend` ABC, `vigem`, `mock` |
 | `session.py` | Per-connection state, pad ownership, seq filtering, watchdog |
-| `stats.py` | recv→apply histogram, periodic and exit summary |
+| `stats.py` | recv→apply histogram and counters; `GET /stats`, periodic and exit summary |
 | `__main__.py` | CLI |
 
 ### CLI
@@ -190,9 +190,12 @@ Controllers without `mapping === "standard"` are ignored by the v1 clients.
 
 ## Send policy
 
-- Client polls `navigator.getGamepads()` on `requestAnimationFrame`.
+- Client polls `navigator.getGamepads()` on `requestAnimationFrame` by default; an
+  optional `fast` mode polls on a 4 ms `setInterval` (`?poll=fast`, see Measurement design).
 - STATE is sent when the mapped state changes from the last sent state.
-- Heartbeat: a STATE every **50 ms** per connected pad even when unchanged.
+- Heartbeat: a STATE every **50 ms** per connected pad even when unchanged. Polls are
+  quantised to the scheduler tick, so a heartbeat is due once `elapsed >= 50 - 8 ms`
+  (`client/web/sendpolicy.js`); a strict `elapsed >= 50` check slipped to 66.7 ms on 60 Hz rAF.
 - `seq` increments per pad.
 - On controller disconnect (`gamepaddisconnected`), the client sends PAD_GONE; the
   server unplugs that virtual pad.
@@ -245,16 +248,53 @@ Sources of delay:
 
 ## Measurement design
 
-- **PING every 250 ms.** The client HUD shows RTT min / median / p95 / p99 and jitter.
-  RTT is `now - t_client - proc_us/1000`.
-- **Daemon histogram.** Tracks time from frame receipt to backend apply; logs a
-  summary periodically and on exit. Logs go to `logs/` (gitignored).
-- **`bench/` synthetic client.** Sends STATE at a fixed rate over loopback or LAN and
-  reports daemon-side and RTT numbers.
+Built in M3. Procedures and how to read the numbers: `docs/latency-testing.md`.
+
+- **PING every 250 ms** from the web client HUD (`client/web/latency.js`, DOM-free).
+  RTT is `now - t_client` from the echoed PONG; network RTT is `RTT - proc_us/1000`; one-way
+  is estimated as network RTT / 2. Rolling window of the last 240 samples (about 60 s):
+  min / median / p95 / p99 / max (nearest rank: `sorted[min(n-1, floor(p*n))]`), jitter
+  (mean absolute difference of consecutive RTTs), lost pings (no PONG within 1 s), server
+  proc median. PINGs are skipped when the poll loop has not ticked for 150 ms: the
+  watchdog counts any frame as liveness, so PINGs must not mask a stalled poll loop.
+- **HUD polling stats:** actual interval between `getGamepads()` polls (median / p99) and
+  STATE packets sent in the last second. Colour grading uses one-way time: median
+  <= 5 ms green, <= 10 ms amber, else red; p99 <= 16.7 ms green, <= 33.4 ms amber, else red.
+  A "Copy stats as JSON" button exports the snapshot.
+- **Daemon stats (`stats.py`).** Counters are plain integer increments on the hot path;
+  the recv->apply histogram is a bounded deque of the last 200 000 samples, sorted only
+  when a snapshot is requested (copied on the loop thread, sorted in a worker).
+  - `GET /stats` returns JSON (also `HEAD`; unauthenticated like static files):
+
+    ```json
+    {"recv_apply":{"count":2501,"window":2501,"min_us":4.3,"median_us":10.4,"p95_us":18.2,
+                   "p99_us":30.4,"max_us":304.2},
+     "frames_received":3000,"stale_drops":0,"malformed_drops":0,"prehello_drops":0,
+     "watchdog_trips":0,"ping_count":499,"uptime_s":10.1}
+    ```
+
+  - `recv_apply.count` is all-time STATE frames applied; `window` is the samples behind the
+    percentiles. Percentile fields are `null` until the first sample.
+  - `frames_received`: binary frames from an active (post-hello) client. `stale_drops`:
+    seq filter. `malformed_drops`: undecodable, unknown-type or bad-pad frames.
+    `prehello_drops`: binary before hello. `watchdog_trips`: 200 ms neutralisations.
+  - Logged as `exit stats: {json}` on shutdown, and as a one-line summary every 30 s with
+    `--verbose`. Logs go to `logs/` (gitignored) when redirected there.
+- **`bench/bench.py` synthetic client** (stdlib only, own minimal WebSocket client).
+  STATE at `--rate` with changing values plus PINGs; prints RTT / network RTT / jitter / loss,
+  the generator's send-interval accuracy and the daemon `/stats`; `--json` for machines;
+  `--spawn` starts a local mock daemon for loopback runs. Loopback excludes Bluetooth,
+  polling quantisation, real LAN/Wi-Fi and display lag.
+- **Polling experiment.** `client/web/schedulers.js` offers `raf` (default) and `fast`
+  (`setInterval` 4 ms), selected with `?poll=raf|fast` or the HUD toggle. In headless
+  Chrome with a fake `getGamepads()`, `fast` polled at a 4.0 ms median (p99 4.6-5.0 ms)
+  and cut the change-to-send delay from median 7.7-8.9 ms / p99 16.1 ms (raf) to median
+  1.9-2.0 ms / p99 4.0 ms (2 runs each, 300 changes per run). This measures the scheduler only; whether Chrome refreshes the real
+  gamepad state that often is unmeasured (needs hardware). Default stays `raf` until then.
 - **Button-to-photon.** Film the controller and the screen with a phone at 240 fps
-  slow-motion; count frames from button press to on-screen change. Repeat for
-  controller-on-PC and ghostpad; compare medians and p99 over many presses. Full
-  procedure goes in `docs/latency-testing.md` (M3).
+  slow-motion; count frames from button press to on-screen change. Compare controller on
+  PC, ghostpad via browser on PC, ghostpad via the TV app, over 20+ presses each. Procedure
+  and results template in `docs/latency-testing.md`. **Not yet done** (needs hardware).
 - No latency claim is made in docs or commits without numbers from these tools.
 
 ## Known risks and open questions

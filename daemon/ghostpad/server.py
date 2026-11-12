@@ -121,7 +121,7 @@ class GhostpadServer:
                 await asyncio.wait_for(self._server.wait_closed(), 2.0)
             except asyncio.TimeoutError:
                 pass
-        log.info(self.stats.summary())
+        log.info("exit stats: %s", self.stats.snapshot_json())
 
     # -- background tasks ---------------------------------------------------
 
@@ -133,6 +133,7 @@ class GhostpadServer:
                 continue
             if perf_counter_ns() - c.ws.last_rx_ns >= self._watchdog_ns:
                 c.neutralized = True
+                self.stats.watchdog_trips += 1
                 log.warning("watchdog: no frames from %r, pads neutral", c.name)
                 self._neutral_all(c)
 
@@ -194,7 +195,9 @@ class GhostpadServer:
                 await self._respond(writer, 400, b"bad request")
                 return
             url = urlsplit(target)
-            if url.path == "/ws":
+            if url.path == "/stats":
+                await self._handle_stats(writer, method)
+            elif url.path == "/ws":
                 await self._handle_ws(reader, writer, method, url.query, headers)
             else:
                 await self._handle_http(writer, method, url.path)
@@ -240,6 +243,17 @@ class GhostpadServer:
         if target.is_dir():
             target = target / "index.html"
         return target if target.is_file() else None
+
+    async def _handle_stats(self, writer: asyncio.StreamWriter, method: str) -> None:
+        if method not in ("GET", "HEAD"):
+            await self._respond(writer, 405, b"method not allowed", extra="Allow: GET, HEAD\r\n")
+            return
+        # Sorting up to `capacity` samples is off the hot path but not free: copy on the loop
+        # thread (cheap), sort in a worker so the watchdog is never blocked.
+        samples = self.stats.copy_samples()
+        loop = asyncio.get_running_loop()
+        body = (await loop.run_in_executor(None, self.stats.snapshot_json, samples)).encode()
+        await self._respond(writer, 200, body, "application/json", head_only=method == "HEAD")
 
     async def _handle_http(self, writer: asyncio.StreamWriter, method: str, path: str) -> None:
         if method not in ("GET", "HEAD"):
@@ -301,7 +315,9 @@ class GhostpadServer:
             if op == wsproto.OP_BIN:
                 if not client.active:
                     self.dropped += 1
+                    stats.prehello_drops += 1
                     continue
+                stats.frames += 1
                 t0 = ws.last_rx_ns
                 m = proto.decode_binary(data)  # type: ignore[arg-type]
                 cls = type(m)
@@ -309,10 +325,12 @@ class GhostpadServer:
                     pad = m.pad
                     if pad >= max_pads:
                         self.dropped += 1
+                        stats.malformed_drops += 1
                         continue
                     last = client.last_seq[pad]
                     if last is not None and not proto.seq_newer(m.seq, last):
                         self.dropped += 1
+                        stats.stale_drops += 1
                         continue
                     client.last_seq[pad] = m.seq
                     try:
@@ -326,12 +344,14 @@ class GhostpadServer:
                         continue
                     stats.record(perf_counter_ns() - t0)
                 elif cls is proto.Ping:
+                    stats.pings += 1
                     proc_us = (perf_counter_ns() - t0) // 1000
                     await ws.send_binary(proto.encode_pong(m.id, m.t_client, proc_us))
                 elif cls is proto.PadGone:
                     self._pad_gone(client, m.pad)
                 else:
                     self.dropped += 1
+                    stats.malformed_drops += 1
             elif not client.active:
                 hello = proto.parse_hello(data)  # type: ignore[arg-type]
                 if hello is None:

@@ -37,8 +37,21 @@
   <p id="nopads" class="hint">No controller detected. Press any button on the controller (browsers hide it until first input).</p>
 </section>
 
-<!-- M3 latency HUD goes here (RTT min/median/p95/p99, jitter). Intentionally empty. -->
-<section id="latency"></section>
+<section id="latency" aria-label="Latency">
+  <h2>Latency <small>(one-way = net RTT / 2; budget: median &le; 5 ms, p99 &le; 16.7 ms)</small></h2>
+  <div id="lat-verdict" class="verdict"></div>
+  <table id="lat-table"></table>
+  <div id="lat-extras" class="extras"></div>
+  <div class="lat-controls">
+    <label class="inline">Polling
+      <select id="poll-mode"><option value="raf">raf (display rate)</option><option value="fast">fast (~4 ms timer)</option></select>
+    </label>
+    <button id="lat-reset" type="button" class="secondary">Reset</button>
+    <button id="lat-copy" type="button">Copy stats as JSON</button>
+    <span id="lat-copy-msg" class="hint"></span>
+  </div>
+  <textarea id="lat-json" class="json" readonly hidden rows="8"></textarea>
+</section>
 
 <script type="module" src="main.js"></script>
 </body>

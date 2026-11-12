@@ -1,10 +1,16 @@
 // ghostpad browser test client: Gamepad API -> STATE over WebSocket (DESIGN.md "Send policy").
 import {
-  MAX_PADS, XB, encodePadGone, encodeState, mapGamepad, statesEqual,
+  MAX_PADS, XB, decodePong, encodePadGone, encodePing, encodeState, mapGamepad, messageType, MSG, statesEqual,
 } from './protocol.js';
 import { Transport, buildUrl, initialConfig, persistConfig } from './transport.js';
+import { LatencyTracker, PING_INTERVAL_MS, PollStats, exportStats } from './latency.js';
+import { heartbeatDue } from './sendpolicy.js';
+import { makeScheduler, normalizePollMode } from './schedulers.js';
+import { copyText, renderHud } from './hud.js';
 
-const HEARTBEAT_MS = 50;
+// Pings are skipped when the poll loop has not ticked this recently. The daemon watchdog treats any
+// frame as liveness, so a stalled poll loop must not be masked by PINGs (held buttons would stick).
+const PING_REQUIRES_POLL_MS = 150;
 const $ = (id) => document.getElementById(id);
 
 // ---- environment checks --------------------------------------------------
@@ -34,6 +40,24 @@ transport.addEventListener('status', (ev) => {
 // After every (re)handshake, force a full STATE for each present pad.
 transport.addEventListener('ready', () => { for (const p of pads.values()) p.lastSent = null; });
 
+// ---- latency (PING/PONG) -------------------------------------------------
+const lat = new LatencyTracker();
+const pollStats = new PollStats();
+let lastPollAt = -Infinity;
+transport.addEventListener('binary', (ev) => {
+  if (messageType(ev.detail) !== MSG.PONG) return;
+  const p = decodePong(ev.detail);
+  if (p) lat.onPong(p, performance.now());
+});
+transport.addEventListener('status', (ev) => { if (ev.detail.state !== 'ready') lat.dropPending(); });
+setInterval(() => {
+  const now = performance.now();
+  lat.sweep(now);
+  if (!transport.ready || paused || now - lastPollAt > PING_REQUIRES_POLL_MS) return;
+  const id = lat.nextPing(now);
+  if (!transport.send(encodePing(id, now))) lat.cancel(id);
+}, PING_INTERVAL_MS);
+
 function doConnect() {
   const host = $('host').value, token = $('token').value;
   persistConfig(host, token);
@@ -49,12 +73,11 @@ for (const id of ['host', 'token']) {
 /** pad index -> {seq, lastSent, lastSendAt, state, ignored, id, ui} */
 const pads = new Map();
 let sentTotal = 0;
-const sendTimes = []; // timestamps of sends within the last second
 
 function sendBinary(buf, now) {
   if (!transport.send(buf)) return false;
   sentTotal++;
-  sendTimes.push(now);
+  pollStats.recordSend(now);
   return true;
 }
 
@@ -87,7 +110,10 @@ let paused = document.visibilityState === 'hidden';
  * MessageChannel loop (M3 experiment). `now` is performance.now().
  */
 function tick(now) {
-  if (paused || !hasGamepadApi) return;
+  if (paused) return;
+  lastPollAt = now;
+  pollStats.recordPoll(now);
+  if (!hasGamepadApi) return;
   const list = navigator.getGamepads();
   for (const gp of list) {
     if (!gp) continue;
@@ -100,7 +126,7 @@ function tick(now) {
     const s = mapGamepad(gp);
     p.state = s;
     const changed = !statesEqual(s, p.lastSent);
-    if (!changed && now - p.lastSendAt < HEARTBEAT_MS) continue;
+    if (!changed && !heartbeatDue(now, p.lastSendAt)) continue;
     const buf = encodeState(index, p.seq, s, now);
     if (sendBinary(buf, now)) {
       p.seq = (p.seq + 1) & 0xffff;
@@ -110,16 +136,24 @@ function tick(now) {
   }
 }
 
-// Scheduler abstraction: start(fn) / stop(). Swap `rafScheduler` for a faster timer later.
-function rafScheduler(fn) {
-  let id = 0, on = false;
-  const loop = (t) => { fn(performance.now()); if (on) id = requestAnimationFrame(loop); };
-  return {
-    start() { if (!on) { on = true; id = requestAnimationFrame(loop); } },
-    stop() { on = false; cancelAnimationFrame(id); },
-  };
-}
-const scheduler = rafScheduler(tick);
+// Scheduler: raf (default) or fast (~4 ms timer); ?poll=raf|fast, switchable from the HUD.
+let pollMode = normalizePollMode(new URLSearchParams(location.search).get('poll'));
+let scheduler = makeScheduler(pollMode, tick);
+$('poll-mode').value = pollMode;
+$('poll-mode').addEventListener('change', () => {
+  const next = normalizePollMode($('poll-mode').value);
+  if (next === pollMode) return;
+  scheduler.stop();
+  pollMode = next;
+  scheduler = makeScheduler(pollMode, tick);
+  pollStats.reset();
+  const u = new URL(location.href);
+  u.searchParams.set('poll', pollMode);
+  history.replaceState(null, '', u);
+  if (!paused) scheduler.start();
+});
+// Test hook: read poll stats / mode without scraping the DOM.
+window.__ghostpad = { pollStats, lat, get pollMode() { return pollMode; }, get scheduler() { return scheduler; } };
 
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') {
@@ -127,6 +161,7 @@ document.addEventListener('visibilitychange', () => {
     scheduler.stop();
   } else {
     paused = false;
+    pollStats.breakChain();
     for (const p of pads.values()) p.lastSent = null; // resend full state
     scheduler.start();
     const b = $('banner-resume');
@@ -221,10 +256,22 @@ requestAnimationFrame(renderLoop);
 
 setInterval(() => {
   const now = performance.now();
-  while (sendTimes.length && now - sendTimes[0] > 1000) sendTimes.shift();
   $('sent').textContent = String(sentTotal);
-  $('rate').textContent = String(sendTimes.length);
+  $('rate').textContent = String(pollStats.sendRate(now));
+  renderHud(lat.snapshot(), pollStats.snapshot(now));
 }, 250);
+
+function statsJson() {
+  const now = performance.now();
+  return JSON.stringify(exportStats(lat.snapshot(), pollStats.snapshot(now), {
+    captured_at: new Date().toISOString(),
+    poll_mode: pollMode,
+    backend: transport.backend,
+    user_agent: navigator.userAgent,
+  }), null, 2);
+}
+$('lat-copy').addEventListener('click', () => copyText(statsJson(), $('lat-json'), $('lat-copy-msg')));
+$('lat-reset').addEventListener('click', () => { lat.reset(); pollStats.reset(); $('lat-copy-msg').textContent = ''; });
 
 // Auto-connect when configured via URL / storage, or by default when served over http(s).
 if (location.protocol.startsWith('http')) doConnect();
