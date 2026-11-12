@@ -1,0 +1,269 @@
+# ghostpad — Design
+
+Source of truth for architecture and the wire protocol. Change this doc and the code
+together. Product scope lives in `PRODUCT.md`, work breakdown in `PLAN.md`.
+
+## Architecture
+
+```
+controller ──BT/USB──▶ client (TV / browser)
+                        │  Gamepad API, polled on rAF
+                        │  STATE on change + 50 ms heartbeat
+                        ▼
+                 ws://<pc-ip>:47800/ws  (LAN, WebSocket, binary + JSON text)
+                        │
+                        ▼
+              ghostpad daemon (PC)  ◀── HTTP GET / serves client/web/ (same port)
+                ┌───────────────────────────────┐
+                │ ws server → decode → watchdog │  no frame for 200 ms → pads neutral
+                │            → PadBackend       │  close → neutral, then unplug
+                └──────────────┬────────────────┘
+                               │ vigem (Windows) | mock | uinput (later)
+                               ▼
+                       virtual Xbox 360 pad
+                               │
+TV  ◀─────────────── HDMI (video + audio) ───── PC game reads the pad
+```
+
+Input only. Video and audio never touch the daemon.
+
+## Repo layout
+
+| Path | Contents |
+|---|---|
+| `daemon/ghostpad/` | Python package: server, protocol, backends, watchdog, CLI |
+| `daemon/tests/` | Unit tests (`unittest`), runnable without Windows |
+| `client/web/` | Browser test client: static, no build step, served by the daemon |
+| `client/tizen/` | Tizen TV app (later, M4/M5) |
+| `bench/` | Latency scripts (synthetic client, analysis) |
+| `docs/` | Procedures, e.g. `latency-testing.md` |
+
+## Daemon
+
+- Python 3.11+, `asyncio`.
+- **Stdlib only for networking.** A minimal hand-written RFC 6455 WebSocket server.
+  No `websockets` dependency.
+- Only runtime dependency: `vgamepad` (Windows, needs the ViGEmBus driver), imported
+  lazily so the daemon runs and tests on any OS with the `mock` backend.
+- Single port, default `47800`:
+  - plain HTTP `GET` serves the static web client from `client/web/`
+  - WebSocket upgrade at path `/ws`
+- Bind address configurable, default `0.0.0.0`.
+
+### Modules (planned)
+
+| Module | Responsibility |
+|---|---|
+| `ws.py` | RFC 6455 handshake, framing, masking, ping/close handling |
+| `http.py` | Minimal static file GET, path sanitising, `/ws` upgrade dispatch |
+| `protocol.py` | Binary encode/decode of messages, JSON control messages |
+| `backends/` | `PadBackend` ABC, `vigem`, `mock` |
+| `session.py` | Per-connection state, pad ownership, seq filtering, watchdog |
+| `stats.py` | recv→apply histogram, periodic and exit summary |
+| `__main__.py` | CLI |
+
+### CLI
+
+```
+python -m ghostpad [--port 47800] [--bind 0.0.0.0] [--backend vigem|mock]
+                   [--token SECRET] [--verbose]
+```
+
+Default backend is `vigem` on Windows, `mock` elsewhere.
+
+### PadBackend
+
+```python
+class PadBackend(Protocol):
+    name: str                                   # "vigem" | "mock"
+    max_pads: int                               # 4
+    def connect(self, pad: int) -> None: ...    # plug in virtual pad
+    def update(self, pad: int, state: PadState) -> None: ...
+    def neutral(self, pad: int) -> None: ...    # release everything
+    def disconnect(self, pad: int) -> None: ... # unplug
+    def close(self) -> None: ...
+```
+
+| Backend | Platform | Notes |
+|---|---|---|
+| `vigem` | Windows | `vgamepad.VX360Gamepad`; needs ViGEmBus; imported lazily |
+| `mock` | Any | Records every call and the last state per pad; used by tests and non-Windows runs |
+| `uinput` | Linux | Later (M6) |
+
+`PadState` = `buttons: int, lt: int, rt: int, lx: int, ly: int, rx: int, ry: int`.
+A pad is plugged in lazily on its first STATE.
+
+## Protocol v1
+
+- Transport: WebSocket at `/ws`.
+- Binary frames, **little-endian**. First byte is the message type.
+- Text frames are JSON control messages.
+
+### Binary messages
+
+| Type | Name | Dir | Size | Layout |
+|---|---|---|---|---|
+| `0x01` | STATE | C→S | 20 | `type u8, pad u8, seq u16, buttons u16, lt u8, rt u8, lx i16, ly i16, rx i16, ry i16, t_client u32` |
+| `0x02` | PING | C→S | 13 | `type u8, id u32, t_client f64` |
+| `0x03` | PONG | S→C | 17 | `type u8, id u32, t_client f64, proc_us u32` |
+| `0x04` | PAD_GONE | C→S | 2 | `type u8, pad u8` |
+| `0x05` | RUMBLE | S→C | 4 | `type u8, pad u8, large u8, small u8` (later milestone) |
+
+Field notes:
+
+- `pad`: 0-3. Anything else is dropped.
+- `seq`: per-pad counter, increments per STATE sent, wraps at 65536.
+- `buttons`: XInput `wButtons` bitmask (table below).
+- `lt`, `rt`: 0-255.
+- `lx, ly, rx, ry`: signed 16-bit, XInput convention, **+y is up**.
+- `t_client`: ms on the client's monotonic clock, `u32`, wraps. Diagnostic only; the
+  server never compares it with its own clock.
+- PING `t_client`: ms as `f64` (e.g. `performance.now()`), echoed verbatim in PONG.
+- PONG `proc_us`: server time between receiving the PING and sending the PONG, in
+  microseconds. The client subtracts it from RTT.
+- Malformed or unknown-type binary frames are dropped and counted, never fatal.
+
+### JSON control messages (text frames)
+
+Client first message:
+
+```json
+{"type":"hello","version":1,"client":"<name>"}
+```
+
+Server reply:
+
+```json
+{"type":"welcome","version":1,"backend":"vigem|mock","max_pads":4}
+```
+
+- Version mismatch: server closes with code **4000**.
+- Binary frames before `hello` are dropped.
+
+### Close codes
+
+| Code | Meaning |
+|---|---|
+| 1000 | Normal close |
+| 4000 | Protocol version mismatch |
+| 4001 | Taken over by a newer client |
+| 4002 | Bad or missing token (HTTP 401 is returned instead if it fails before upgrade) |
+
+### Sequence handling
+
+`seq` is compared wrap-aware (serial number arithmetic): a frame is newer if
+`(seq - last) mod 65536` is in `1..32767`. Equal or older frames are dropped without
+touching the backend. The first frame for a pad is always accepted. Heartbeats carry a
+fresh `seq`, so they are accepted like any other STATE.
+
+## Input mapping
+
+Browser Gamepad "standard" mapping to XInput.
+
+| Gamepad index | Control | XInput | Value |
+|---|---|---|---|
+| buttons[0] | A | `A` | `0x1000` |
+| buttons[1] | B | `B` | `0x2000` |
+| buttons[2] | X | `X` | `0x4000` |
+| buttons[3] | Y | `Y` | `0x8000` |
+| buttons[4] | LB | `LEFT_SHOULDER` | `0x0100` |
+| buttons[5] | RB | `RIGHT_SHOULDER` | `0x0200` |
+| buttons[6] | LT | `lt` analog | `round(value*255)` |
+| buttons[7] | RT | `rt` analog | `round(value*255)` |
+| buttons[8] | Back | `BACK` | `0x0020` |
+| buttons[9] | Start | `START` | `0x0010` |
+| buttons[10] | LS click | `LEFT_THUMB` | `0x0040` |
+| buttons[11] | RS click | `RIGHT_THUMB` | `0x0080` |
+| buttons[12] | D-pad up | `DPAD_UP` | `0x0001` |
+| buttons[13] | D-pad down | `DPAD_DOWN` | `0x0002` |
+| buttons[14] | D-pad left | `DPAD_LEFT` | `0x0004` |
+| buttons[15] | D-pad right | `DPAD_RIGHT` | `0x0008` |
+| buttons[16] | Guide | `GUIDE` | `0x0400` |
+| axes[0] | LX | `lx` | `round(v*32767)` |
+| axes[1] | LY | `ly` | `round(-v*32767)` (Y inverted) |
+| axes[2] | RX | `rx` | `round(v*32767)` |
+| axes[3] | RY | `ry` | `round(-v*32767)` (Y inverted) |
+
+Axis values are clamped to [-1, 1] before scaling, so results stay within
+`-32767..32767`. LT/RT bits are never set in `buttons`; triggers are analog only.
+Controllers without `mapping === "standard"` are ignored by the v1 clients.
+
+## Send policy
+
+- Client polls `navigator.getGamepads()` on `requestAnimationFrame`.
+- STATE is sent when the mapped state changes from the last sent state.
+- Heartbeat: a STATE every **50 ms** per connected pad even when unchanged.
+- `seq` increments per pad.
+- On controller disconnect (`gamepaddisconnected`), the client sends PAD_GONE; the
+  server unplugs that virtual pad.
+- On (re)connect, the client sends `hello`, then a full STATE for each pad present.
+
+## Ownership and fail-safe
+
+- **One client owns the pads at a time.** A second client connecting takes over: the
+  old connection is closed with code 4001. Simplest model for a single user.
+- **Watchdog:** no frame of any kind from a client for **200 ms** sets all of that
+  client's pads to neutral (buttons 0, triggers 0, sticks 0). Pads stay plugged in.
+  The next STATE resumes normal operation.
+- **Close:** on connection close, pads go neutral, then are unplugged.
+- **Shutdown:** the daemon neutralises and unplugs all pads on exit (SIGINT, SIGTERM).
+- Watchdog tick is 20 ms or finer, so worst-case release is about 220 ms. This meets
+  the 250 ms target in `PRODUCT.md`.
+- A half-open TCP link (cable pulled) is covered by the watchdog, not by TCP timeouts.
+
+## Security
+
+- LAN only, no TLS, **no auth in v1**.
+- Optional `--token SECRET`: clients pass it as `?token=SECRET` on the `/ws` URL.
+  Compared in constant time. Without a token, anyone on the LAN can drive the pad.
+- Bind address configurable (`--bind`, default `0.0.0.0`). Use `127.0.0.1` for local
+  testing.
+- Static serving is restricted to the `client/web/` tree; paths with `..` or absolute
+  paths are rejected.
+- Do not expose the port to the internet.
+
+## Latency budget
+
+Targets on wired LAN, compared with the controller plugged directly into the PC:
+
+| Metric | Target |
+|---|---|
+| Median added latency | ≤ 5 ms |
+| p99 added latency | ≤ 16.7 ms (one 60 Hz frame) |
+| All-neutral after link loss | ≤ 250 ms |
+
+Sources of delay:
+
+| Source | Expected | Ours? | Notes |
+|---|---|---|---|
+| Controller → TV (Bluetooth) | Several ms | No | Same class of delay as a PC-paired controller; excluded from the "added" figure only if measured as a baseline |
+| rAF polling quantisation | 0 to 16.7 ms at 60 Hz | Yes | **Biggest known contributor.** Mitigation idea: poll via `setInterval` or a `MessageChannel` loop faster than rAF. To be tested, not assumed |
+| Network RTT / 2 | < 1 ms wired | Yes | Wi-Fi on either end adds jitter |
+| Daemon processing | Sub-millisecond | Yes | Decode, seq check, backend call |
+| ViGEm update | ~1 ms | Partly | Driver report submission |
+| Game's own polling | 0 to 1 frame | No | Same with a directly attached pad |
+
+## Measurement design
+
+- **PING every 250 ms.** The client HUD shows RTT min / median / p95 / p99 and jitter.
+  RTT is `now - t_client - proc_us/1000`.
+- **Daemon histogram.** Tracks time from frame receipt to backend apply; logs a
+  summary periodically and on exit. Logs go to `logs/` (gitignored).
+- **`bench/` synthetic client.** Sends STATE at a fixed rate over loopback or LAN and
+  reports daemon-side and RTT numbers.
+- **Button-to-photon.** Film the controller and the screen with a phone at 240 fps
+  slow-motion; count frames from button press to on-screen change. Repeat for
+  controller-on-PC and ghostpad; compare medians and p99 over many presses. Full
+  procedure goes in `docs/latency-testing.md` (M3).
+- No latency claim is made in docs or commits without numbers from these tools.
+
+## Known risks and open questions
+
+| Risk | Detail |
+|---|---|
+| `tizen.tvwindow` availability | API is "Optional" on TVs; unverified on the 2025 U8500F. Privilege `http://tizen.org/privilege/tv.window` is public. Resolved by M4 |
+| Game Mode and audio | Unknown whether low-latency Game Mode and HDMI audio survive when HDMI is shown inside the app window |
+| Background pause | Tizen pauses JS in background apps, so the app must stay foreground; this is why HDMI is shown inside the app |
+| Secure context | Gamepad API in desktop Chrome needs a secure context. `localhost` works, plain `http://LAN-IP` does not. Affects the browser test client from another machine, not packaged Tizen apps |
+| ViGEmBus | Unmaintained, but still works |
+| rAF quantisation | May dominate the latency budget; see mitigation above |

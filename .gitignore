@@ -1,0 +1,52 @@
+# --- Python (daemon, bench scripts) ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+.python-version
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- Packaging (PyInstaller exe for Windows) ---
+build/
+dist/
+*.spec
+
+# --- Tizen client ---
+# Build output and signed packages
+.buildResult/
+*.wgt
+# Signing material: never commit certificates or generated signatures
+*.p12
+author-signature.xml
+signature1.xml
+.sign/
+.manifest.tmp
+
+# --- Node (if the web/Tizen client grows a toolchain) ---
+node_modules/
+
+# --- Latency logs and benchmark output ---
+logs/
+bench/results/
+*.log
+
+# --- Secrets / local config ---
+.env
+.env.*
+!.env.example
+ghostpad.local.toml
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.swp
