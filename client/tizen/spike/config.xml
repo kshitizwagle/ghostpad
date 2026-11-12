@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ghostpad M4 Tizen TV spike. Sideload only (developer-signed), never store-submitted.
+  UNVERIFIED on a real TV. See docs/tizen-spike.md.
+  Package id must be exactly 10 alphanumeric chars; application id = <package>.<name>.
+  required_version 6.0 is deliberately low so any Tizen 6.0+ TV (2021+) accepts it;
+  the 2025 U8500F should be Tizen 9.0.
+-->
+<widget xmlns="http://www.w3.org/ns/widgets"
+        xmlns:tizen="http://tizen.org/ns/widgets"
+        id="http://ghostpad.local/spike"
+        version="0.1.0"
+        viewmodes="maximized">
+  <tizen:application id="GhstPadSpk.Spike" package="GhstPadSpk" required_version="6.0"/>
+  <content src="index.html"/>
+  <feature name="http://tizen.org/feature/screen.size.all"/>
+  <icon src="icon.png"/>
+  <name>Ghostpad Spike</name>
+  <author>ghostpad</author>
+  <description>HDMI-in-app + gamepad feasibility spike</description>
+
+  <!-- TVWindow API: show an HDMI source inside the app. -->
+  <tizen:privilege name="http://tizen.org/privilege/tv.window"/>
+  <!-- TVInputDevice API: register remote keys (Info, colour keys). -->
+  <tizen:privilege name="http://tizen.org/privilege/tv.inputdevice"/>
+  <!-- Network access (WebSocket to the PC). -->
+  <tizen:privilege name="http://tizen.org/privilege/internet"/>
+
+  <!-- Allow ws:// to any LAN host. Narrow this to the PC's IP for anything but the spike. -->
+  <access origin="*" subdomains="true"/>
+
+  <tizen:profile name="tv"/>
+  <tizen:setting screen-orientation="landscape" context-menu="disable"
+                 background-support="disable" encryption="disable" install-location="auto"/>
+</widget>

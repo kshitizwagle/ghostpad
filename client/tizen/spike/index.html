@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Ghostpad Spike</title>
+  <meta name="viewport" content="width=1920, height=1080, initial-scale=1">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- Page is transparent on purpose: the HDMI video is placed BEHIND the web layer. -->
+  <div id="mini" class="hidden"></div>
+  <div id="overlay" class="hidden">
+    <div id="title">ghostpad spike &mdash; Info/Green: cycle overlay | Yellow: z-order | Blue: hide/show video | Red: restart</div>
+    <div id="cols">
+      <div class="col">
+        <h2>Steps</h2>
+        <pre id="steps"></pre>
+        <h2>Sources</h2>
+        <pre id="sources"></pre>
+        <h2>Page</h2>
+        <pre id="page"></pre>
+      </div>
+      <div class="col">
+        <h2>Gamepad</h2>
+        <pre id="pads"></pre>
+        <h2>WebSocket</h2>
+        <pre id="ws"></pre>
+        <h2>Log</h2>
+        <pre id="log"></pre>
+      </div>
+    </div>
+  </div>
+  <script src="protocol.js"></script>
+  <script src="main.js"></script>
+</body>
+</html>
