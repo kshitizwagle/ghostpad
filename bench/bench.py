@@ -28,6 +28,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from urllib.parse import quote
 
 GUID = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 LOSS_TIMEOUT_S = 1.0
@@ -72,7 +73,7 @@ class WSClient:
         if sock is not None:
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         key = base64.b64encode(os.urandom(16)).decode()
-        path = "/ws" + (f"?token={token}" if token else "")
+        path = "/ws" + (f"?token={quote(token, safe='')}" if token else "")
         w.write((f"GET {path} HTTP/1.1\r\nHost: {host}:{port}\r\nUpgrade: websocket\r\n"
                  f"Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n").encode())
         await w.drain()
@@ -117,6 +118,11 @@ class WSClient:
         except Exception:
             pass
         self.w.close()
+
+
+def stats_path(token: str | None) -> str:
+    """/stats URL path; the daemon requires ?token= when started with --token."""
+    return "/stats" + (f"?token={quote(token, safe='')}" if token else "")
 
 
 async def http_get_json(host: str, port: int, path: str) -> dict:
@@ -238,7 +244,7 @@ async def run_bench(args: argparse.Namespace) -> dict:
     # Snapshot the daemon before the link goes quiet (the 200 ms watchdog would count a trip),
     # then wait out the loss timeout for outstanding PONGs.
     await asyncio.sleep(0.1)
-    stats = await http_get_json(args.host, args.port, "/stats")
+    stats = await http_get_json(args.host, args.port, stats_path(args.token))
     await asyncio.sleep(LOSS_TIMEOUT_S)
     state["lost"] += len(pending)
     pending.clear()
@@ -281,7 +287,7 @@ async def spawn_daemon(token: str | None) -> tuple[subprocess.Popen, int]:
         if proc.poll() is not None:
             raise RuntimeError("spawned daemon exited early")
         try:
-            await http_get_json("127.0.0.1", port, "/stats")
+            await http_get_json("127.0.0.1", port, stats_path(token))
             return proc, port
         except (OSError, RuntimeError, ValueError):
             await asyncio.sleep(0.05)

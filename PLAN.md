@@ -8,19 +8,19 @@ to the TV; video and audio stay on the cable. Why: avoid streaming latency and c
 issues while keeping the couch controller. See `PRODUCT.md` for scope and
 `DESIGN.md` for architecture and protocol.
 
-Status: **M0 in progress.**
+Status: **M1-M3 code complete (ViGEm backend untested on Windows; M3 hardware measurements pending); M4 written, untested on TV; M6 in progress; M5 not started.** See "Needs hardware".
 
 ## Milestones
 
 | ID | Name | Outcome | Status |
 |---|---|---|---|
 | M0 | Bootstrap | Repo docs (PRODUCT, DESIGN, PLAN, CLAUDE) | Done |
-| M1 | Windows daemon | WS server, protocol decode, PadBackend (vigem + mock), watchdog, CLI, tests without Windows | Done |
-| M2 | Browser test client | Static page: Gamepad API to STATE, connection status, live pad view | Not started |
-| M3 | Latency measurement | PING/PONG, HUD stats, daemon histograms, bench script, button-to-photon doc | In progress (tooling done; hardware measurements pending) |
-| M4 | Tizen spike (go/no-go) | Sideloadable app showing HDMI via tvwindow with gamepad overlay; feasibility verdict | Not started |
+| M1 | Windows daemon | WS server, protocol decode, PadBackend (vigem + mock), watchdog, CLI, tests without Windows | Written; ViGEm backend untested on Windows |
+| M2 | Browser test client | Static page: Gamepad API to STATE, connection status, live pad view | Done |
+| M3 | Latency measurement | PING/PONG, HUD stats, daemon histograms, bench script, button-to-photon doc | Tooling done; hardware measurements pending |
+| M4 | Tizen spike (go/no-go) | Sideloadable app showing HDMI via tvwindow with gamepad overlay; feasibility verdict | Written; untested on TV |
 | M5 | Tizen client | Real TV app: config, auto-reconnect, HDMI source select, overlay | Not started |
-| M6 | Polish | Rumble, PyInstaller exe + autostart, Linux uinput backend, install guide | Not started |
+| M6 | Polish | Rumble, PyInstaller exe + autostart, Linux uinput backend, install guide | In progress |
 
 M4 can start in parallel with M2/M3 since it is the biggest unknown. If M4 is a
 no-go, M5 is replanned before any further Tizen work.
@@ -78,14 +78,14 @@ wired LAN, with the polling-mitigation result recorded.
 
 ## M4 — Tizen spike (go/no-go)
 
-- [ ] Minimal sideloadable app (`client/tizen/`), developer mode on the U8500F
-- [ ] Check `tizen.tvwindow` presence and the `tv.window` privilege at runtime
-- [ ] Show HDMI input inside the app window
-- [ ] Gamepad readout overlay; confirm input is still delivered with HDMI shown
+- [x] Minimal sideloadable app (`client/tizen/spike/`; code only, developer mode on the U8500F not yet done)
+- [x] Check `tizen.tvwindow` presence and the `tv.window` privilege at runtime (code; not run on TV)
+- [x] Show HDMI input inside the app window (code; not run on TV)
+- [x] Gamepad readout overlay (code); confirming input is delivered with HDMI shown needs the TV
 - [ ] Verify HDMI audio keeps playing
 - [ ] Check Game Mode / low-latency behaviour and visible picture lag
 - [ ] Verify the app stays foreground and JS is not paused
-- [ ] Write findings and a go/no-go verdict in `docs/`
+- [ ] Write findings and a go/no-go verdict in `docs/` (`docs/tizen-spike.md` has the design and checklist; no verdict yet)
 
 Exit criteria: a written verdict on each of API presence, input while HDMI shown,
 audio, and Game Mode/lag. Failures are recorded as blockers with alternatives.
@@ -105,14 +105,23 @@ unplug-the-cable test releases all inputs within 250 ms.
 
 ## M6 — Polish
 
-- [ ] RUMBLE: vigem notification callback to message 0x05; client uses `vibrationActuator`
-- [ ] PyInstaller single exe for Windows
-- [ ] Autostart on Windows login
+- [ ] RUMBLE: vigem notification callback to message 0x05 (daemon side not done); client uses `vibrationActuator` (done: `client/web/rumble.js`)
+- [x] PyInstaller single exe for Windows (`daemon/packaging/build_exe.py`; untested on Windows)
+- [x] Autostart on Windows login (`daemon/packaging/install_autostart.ps1`, `uninstall_autostart.ps1`; untested on Windows)
 - [ ] Linux `uinput` backend
 - [ ] Multi-pad (up to 4) verified end to end
-- [ ] `README.md` install guide (ViGEmBus, daemon, TV sideload)
+- [x] `README.md` install guide (ViGEmBus, daemon, TV sideload) and `docs/windows-setup.md` (untested on Windows)
 
 Exit criteria: a clean-machine install following only the README works end to end.
+
+## Needs hardware
+
+| Item | Where |
+|---|---|
+| Windows ViGEm verification: a real game sees the virtual X360 pad | issue #3, `docs/windows-setup.md` |
+| Tizen spike go/no-go on the TV (tvwindow, input with HDMI shown, audio, Game Mode) | issues #9, #10, `docs/tizen-spike.md` |
+| Real-controller polling comparison (rAF vs fast timer) | issue #16 |
+| Button-to-photon measurement | `docs/latency-testing.md` section c |
 
 ## Working agreements
 

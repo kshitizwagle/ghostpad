@@ -32,6 +32,17 @@ class StatsTests(unittest.TestCase):
         self.assertEqual(r["daemon_stats"]["stale_drops"], 0)
         json.dumps(r)
 
+    def test_stats_path_encodes_token(self):
+        self.assertEqual(bench.stats_path(None), "/stats")
+        self.assertEqual(bench.stats_path("a b&c/d"), "/stats?token=a%20b%26c%2Fd")
+
+    def test_spawn_with_token(self):
+        args = bench.parse_args(["--spawn", "--token", "s3cr3t &/x", "--duration", "0.6", "--rate", "100",
+                                 "--ping-interval-ms", "50"])
+        r = asyncio.run(bench.amain(args))
+        self.assertGreater(r["pings"]["received"], 5)
+        self.assertGreaterEqual(r["daemon_stats"]["frames_received"], 50)
+
 
 if __name__ == "__main__":
     unittest.main()
