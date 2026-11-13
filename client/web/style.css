@@ -54,3 +54,26 @@ input:focus-visible, button:focus-visible { outline: 3px solid #fff; outline-off
   background: var(--dim); left: 50%; top: 50%; }
 .box > i.on { background: var(--accent); }
 .num { font-variant-numeric: tabular-nums; font-size: .7rem; }
+#latency { background: var(--panel); border: 1px solid var(--line); border-radius: .7rem; padding: 1rem 1.2rem; }
+#latency h2 { margin: 0 0 .5rem; font-size: 1.1rem; }
+#latency h2 small { color: var(--dim); font-weight: 400; font-size: .8rem; }
+.verdict { display: flex; gap: 1.5rem; flex-wrap: wrap; font-size: 1.5rem; font-weight: 700; margin-bottom: .5rem; }
+.verdict span, #lat-table td.good, #lat-table td.warn, #lat-table td.bad { border-radius: .3rem; }
+.verdict span { padding: 0 .6rem; }
+.good { color: var(--ok); } .warn { color: var(--warn); } .bad { color: var(--err); } .none { color: var(--dim); }
+#lat-table { border-collapse: collapse; font-variant-numeric: tabular-nums; font-size: 1.1rem; }
+#lat-table th, #lat-table td { padding: .2rem .9rem; text-align: right; }
+#lat-table th { color: var(--dim); font-weight: 400; font-size: .85rem; }
+#lat-table th:first-child, #lat-table td:first-child { text-align: left; color: var(--dim); }
+#lat-table td.good, #lat-table td.warn, #lat-table td.bad { font-weight: 700; }
+.extras { display: flex; gap: 1.6rem; flex-wrap: wrap; margin: .6rem 0; }
+.extras > div { display: flex; flex-direction: column; }
+.extras .v { font-size: 1.2rem; }
+.lat-controls { display: flex; gap: .8rem; flex-wrap: wrap; align-items: end; }
+label.inline { flex-direction: row; align-items: center; gap: .5rem; }
+select { font: inherit; font-size: 1rem; color: var(--fg); background: var(--bg); border: 2px solid var(--line);
+  border-radius: .4rem; padding: .4rem .5rem; }
+select:focus-visible { outline: 3px solid #fff; outline-offset: 2px; }
+button.secondary { color: var(--fg); background: var(--panel); border-color: var(--line); }
+.json { width: 100%; margin-top: .6rem; font-family: ui-monospace, monospace; font-size: .75rem;
+  color: var(--fg); background: var(--bg); border: 1px solid var(--line); }
