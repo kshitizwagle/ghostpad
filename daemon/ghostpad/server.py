@@ -138,6 +138,17 @@ class GhostpadServer:
 
     # -- background tasks ---------------------------------------------------
 
+    def status(self) -> dict:
+        """Snapshot for a UI (tray). Safe to call from another thread: reads only."""
+        c = self._owner
+        return {
+            "listening": self._server is not None and self._server.is_serving(),
+            "backend": self.backend.name,
+            "port": self.port,
+            "client": c.name if c is not None else None,
+            "pads": [i for i, p in enumerate(c.plugged) if p] if c is not None else [],
+        }
+
     async def _watchdog_loop(self) -> None:
         while True:
             await asyncio.sleep(WATCHDOG_TICK_S)

@@ -21,7 +21,7 @@ drives the virtual pad via ViGEm. Input only; no streaming.
 ## Layout
 
 ```
-daemon/ghostpad/   Python package (server.py, wsproto.py, protocol.py, stats.py, backends/, CLI)
+daemon/ghostpad/   Python package (server.py, wsproto.py, protocol.py, stats.py, backends/, CLI, tray.py)
 daemon/tests/      unittest suite, must run without Windows
 client/web/        browser test client, static, no build step
 client/web/tests/  node:test suite for the web client
@@ -40,6 +40,7 @@ python bench/vigem_check.py                              # Windows + ViGEmBus on
 node --test "client/web/tests/*.test.mjs"                # web client tests (from repo root)
 python -m ghostpad --backend mock --verbose              # run locally (from daemon/)
 python -m ghostpad --backend mock --trace                # also log every pad op at DEBUG
+python -m ghostpad --tray                                # Windows: tray icon instead of a console
 ```
 
 `--backend` defaults to `auto` (`vigem` on Windows, otherwise `mock`). The `mock` backend

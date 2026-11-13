@@ -108,6 +108,7 @@ unplug-the-cable test releases all inputs within 250 ms.
 - [x] RUMBLE: vigem notification callback to message 0x05 (daemon, tested with the mock backend; with the driver: `docs/windows-setup.md` check 17); client uses `vibrationActuator` (`client/web/rumble.js`). Tizen vibration path is M5
 - [x] PyInstaller exe for Windows (`daemon/packaging/build_exe.py`; one folder by default; verified on Windows 11 without the driver)
 - [x] Autostart on Windows login (`daemon/packaging/install_autostart.ps1`, `uninstall_autostart.ps1`; install, start and uninstall verified on Windows 11; a real logon start not yet)
+- [x] Windows tray app (`--tray`, `build_exe.py --tray`; stdlib ctypes, no new dependency; icon, status, clean quit and the TV client verified on Windows 11; menu clicks, Run-key logon start and logoff release not yet)
 - [ ] Linux `uinput` backend
 - [x] Multi-pad (up to 4) verified end to end (protocol client to XInput slots 0-3, `bench/vigem_check.py`; four real controllers in a browser not tried)
 - [x] `README.md` install guide (ViGEmBus, daemon, TV sideload) and `docs/windows-setup.md` (partly verified on Windows; driver steps not)

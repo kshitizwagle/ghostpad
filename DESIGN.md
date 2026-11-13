@@ -61,12 +61,15 @@ Input only. Video and audio never touch the daemon.
 | `backends/` | `PadBackend` ABC, `vigem`, `mock` |
 | `stats.py` | recv→apply histogram and counters; `GET /stats`, periodic and exit summary |
 | `__main__.py` | CLI |
+| `tray.py` | Windows tray app (`--tray`): server on a worker-thread loop, Win32 icon and menu via ctypes on the main thread |
+| `trayicon.py` | Tray and exe icon artwork drawn in code (signed distance functions), PNG/ICO encoding |
 
 ### CLI
 
 ```
 python -m ghostpad [--port 47800] [--bind 0.0.0.0] [--backend auto|vigem|mock]
                    [--token SECRET] [--web-root DIR] [--verbose] [--trace]
+                   [--tray] [--log-file PATH]
 ```
 
 | Flag | Meaning |
@@ -76,6 +79,8 @@ python -m ghostpad [--port 47800] [--bind 0.0.0.0] [--backend auto|vigem|mock]
 | `--token` | See Security |
 | `--verbose` | DEBUG logging and a one-line stats summary every 30 s |
 | `--trace` | Log every pad connect / update / neutral / unplug and PAD_GONE at DEBUG (implies DEBUG level). Per-frame output, noisy; off by default and costs nothing on the hot path (a single boolean check, no string formatting) |
+| `--tray` | Windows only: notification-area icon (state colour, status, Open log, Open web test client, Start with Windows, Quit). Logs to a rotating file, default `%LOCALAPPDATA%\ghostpad\ghostpad.log`. Quit, logoff/shutdown (`WM_ENDSESSION`) and Ctrl+C stop the server normally (neutral, then unplug). Second instance on the same port: refused (named mutex) |
+| `--log-file` | Also log to this file (rotated at 1 MB, 3 kept) |
 
 ### PadBackend
 
