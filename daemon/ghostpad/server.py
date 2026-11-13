@@ -20,9 +20,11 @@ log = logging.getLogger(__name__)
 CLOSE_VERSION = 4000
 CLOSE_TAKEN_OVER = 4001
 CLOSE_BAD_TOKEN = 4002
+CLOSE_HELLO_TIMEOUT = 4003
 
 WATCHDOG_TIMEOUT_NS = 200_000_000
 WATCHDOG_TICK_S = 0.010
+HELLO_TIMEOUT_S = 5.0
 MAX_HEAD = 16 * 1024
 
 DEFAULT_WEB_ROOT = Path(__file__).resolve().parents[2] / "client" / "web"
@@ -42,12 +44,13 @@ _CONTENT_TYPES = {
     ".wasm": "application/wasm",
 }
 
-_REASONS = {200: "OK", 400: "Bad Request", 404: "Not Found", 405: "Method Not Allowed",
+_REASONS = {200: "OK", 400: "Bad Request", 403: "Forbidden", 404: "Not Found", 405: "Method Not Allowed",
             426: "Upgrade Required", 431: "Request Header Fields Too Large"}
 
 
 class Client:
-    __slots__ = ("ws", "name", "active", "plugged", "last_seq", "neutralized")
+    __slots__ = ("ws", "name", "active", "plugged", "last_seq", "neutralized",
+                 "last_input_ns")
 
     def __init__(self, ws: wsproto.WebSocket, max_pads: int) -> None:
         self.ws = ws
@@ -56,6 +59,7 @@ class Client:
         self.plugged = [False] * max_pads
         self.last_seq: list[int | None] = [None] * max_pads
         self.neutralized = False
+        self.last_input_ns = perf_counter_ns()  # last STATE / PAD_GONE (not PING)
 
 
 class GhostpadServer:
@@ -69,6 +73,8 @@ class GhostpadServer:
         stats: Stats | None = None,
         watchdog_ms: float = 200,
         stats_interval: float | None = None,
+        hello_timeout: float = HELLO_TIMEOUT_S,
+        trace: bool = False,
     ) -> None:
         self.backend = backend
         self.host = host
@@ -78,6 +84,8 @@ class GhostpadServer:
         self.stats = stats if stats is not None else Stats()
         self._watchdog_ns = int(watchdog_ms * 1_000_000)
         self._stats_interval = stats_interval
+        self._hello_timeout = hello_timeout
+        self._trace = trace
         self._welcome = proto.encode_welcome(backend.name, backend.max_pads)
         self._owner: Client | None = None
         self._clients: set[Client] = set()
@@ -131,10 +139,10 @@ class GhostpadServer:
             c = self._owner
             if c is None or c.neutralized or not any(c.plugged):
                 continue
-            if perf_counter_ns() - c.ws.last_rx_ns >= self._watchdog_ns:
+            if perf_counter_ns() - c.last_input_ns >= self._watchdog_ns:
                 c.neutralized = True
                 self.stats.watchdog_trips += 1
-                log.warning("watchdog: no frames from %r, pads neutral", c.name)
+                log.warning("watchdog: no input from %r, pads neutral", c.name)
                 self._neutral_all(c)
 
     async def _stats_loop(self) -> None:
@@ -148,6 +156,8 @@ class GhostpadServer:
     def _neutral_all(self, c: Client) -> None:
         for pad, on in enumerate(c.plugged):
             if on:
+                if self._trace:
+                    log.debug("trace pad %d neutral (watchdog)", pad)
                 try:
                     self.backend.neutral(pad)
                 except Exception:
@@ -160,6 +170,8 @@ class GhostpadServer:
             if on:
                 c.plugged[pad] = False
                 c.last_seq[pad] = None
+                if self._trace:
+                    log.debug("trace pad %d neutral, unplug (release)", pad)
                 try:
                     self.backend.neutral(pad)
                     self.backend.disconnect(pad)
@@ -196,7 +208,7 @@ class GhostpadServer:
                 return
             url = urlsplit(target)
             if url.path == "/stats":
-                await self._handle_stats(writer, method)
+                await self._handle_stats(writer, method, url.query)
             elif url.path == "/ws":
                 await self._handle_ws(reader, writer, method, url.query, headers)
             else:
@@ -244,7 +256,16 @@ class GhostpadServer:
             target = target / "index.html"
         return target if target.is_file() else None
 
-    async def _handle_stats(self, writer: asyncio.StreamWriter, method: str) -> None:
+    def _token_ok(self, query: str) -> bool:
+        if self.token is None:
+            return True
+        given = parse_qs(query).get("token", [""])[0]
+        return hmac.compare_digest(given.encode(), self.token.encode())
+
+    async def _handle_stats(self, writer: asyncio.StreamWriter, method: str, query: str = "") -> None:
+        if not self._token_ok(query):
+            await self._respond(writer, 403, b"forbidden")
+            return
         if method not in ("GET", "HEAD"):
             await self._respond(writer, 405, b"method not allowed", extra="Allow: GET, HEAD\r\n")
             return
@@ -291,12 +312,10 @@ class GhostpadServer:
         client = Client(ws, self.backend.max_pads)
         self._clients.add(client)
         try:
-            if self.token is not None:
-                given = parse_qs(query).get("token", [""])[0]
-                if not hmac.compare_digest(given.encode(), self.token.encode()):
-                    log.warning("rejected client: bad token")
-                    await ws.close(CLOSE_BAD_TOKEN, "bad token")
-                    return
+            if not self._token_ok(query):
+                log.warning("rejected client: bad token")
+                await ws.close(CLOSE_BAD_TOKEN, "bad token")
+                return
             await self._session(client)
         finally:
             self._release(client)
@@ -307,8 +326,18 @@ class GhostpadServer:
         backend = self.backend
         max_pads = backend.max_pads
         stats = self.stats
+        hello_deadline = asyncio.get_running_loop().time() + self._hello_timeout
         while True:
-            msg = await ws.recv()
+            if client.active:
+                msg = await ws.recv()
+            else:
+                left = hello_deadline - asyncio.get_running_loop().time()
+                try:
+                    msg = await asyncio.wait_for(ws.recv(), max(left, 0.0))
+                except asyncio.TimeoutError:
+                    log.warning("no valid hello within %.1fs, closing", self._hello_timeout)
+                    await ws.close(CLOSE_HELLO_TIMEOUT, "hello timeout")
+                    return
             if msg is None:
                 return
             op, data = msg
@@ -333,11 +362,16 @@ class GhostpadServer:
                         stats.stale_drops += 1
                         continue
                     client.last_seq[pad] = m.seq
+                    client.last_input_ns = t0
                     try:
                         if not client.plugged[pad]:
+                            if self._trace:
+                                log.debug("trace pad %d connect", pad)
                             backend.connect(pad)
                             client.plugged[pad] = True
                         client.neutralized = False
+                        if self._trace:
+                            log.debug("trace pad %d update seq=%d %s", pad, m.seq, m.state)
                         backend.update(pad, m.state)
                     except Exception:
                         log.exception("backend update failed (pad %d)", pad)
@@ -348,6 +382,7 @@ class GhostpadServer:
                     proc_us = (perf_counter_ns() - t0) // 1000
                     await ws.send_binary(proto.encode_pong(m.id, m.t_client, proc_us))
                 elif cls is proto.PadGone:
+                    client.last_input_ns = t0
                     self._pad_gone(client, m.pad)
                 else:
                     self.dropped += 1
@@ -377,6 +412,8 @@ class GhostpadServer:
         log.info("client %r connected", name)
 
     def _pad_gone(self, client: Client, pad: int) -> None:
+        if self._trace:
+            log.debug("trace pad %d PAD_GONE", pad)
         client.last_seq[pad] = None
         if client.plugged[pad]:
             client.plugged[pad] = False

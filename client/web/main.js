@@ -1,12 +1,13 @@
 // ghostpad browser test client: Gamepad API -> STATE over WebSocket (DESIGN.md "Send policy").
 import {
-  MAX_PADS, XB, decodePong, encodePadGone, encodePing, encodeState, mapGamepad, messageType, MSG, statesEqual,
+  MAX_PADS, XB, decodePong, decodeRumble, encodePadGone, encodePing, encodeState, mapGamepad, messageType, MSG, statesEqual,
 } from './protocol.js';
 import { Transport, buildUrl, initialConfig, persistConfig } from './transport.js';
 import { LatencyTracker, PING_INTERVAL_MS, PollStats, exportStats } from './latency.js';
 import { heartbeatDue } from './sendpolicy.js';
 import { makeScheduler, normalizePollMode } from './schedulers.js';
 import { copyText, renderHud } from './hud.js';
+import { RumbleController } from './rumble.js';
 
 // Pings are skipped when the poll loop has not ticked this recently. The daemon watchdog treats any
 // frame as liveness, so a stalled poll loop must not be masked by PINGs (held buttons would stick).
@@ -40,16 +41,29 @@ transport.addEventListener('status', (ev) => {
 // After every (re)handshake, force a full STATE for each present pad.
 transport.addEventListener('ready', () => { for (const p of pads.values()) p.lastSent = null; });
 
+// ---- rumble (RUMBLE -> vibrationActuator) -------------------------------
+const rumble = new RumbleController({
+  getGamepad: (i) => (hasGamepadApi ? navigator.getGamepads()[i] : null),
+  onChange: (pad, large, small) => {
+    const p = pads.get(pad);
+    if (p && p.ui.rumble) renderRumble(p.ui.rumble, large, small);
+  },
+});
+
 // ---- latency (PING/PONG) -------------------------------------------------
 const lat = new LatencyTracker();
 const pollStats = new PollStats();
 let lastPollAt = -Infinity;
 transport.addEventListener('binary', (ev) => {
-  if (messageType(ev.detail) !== MSG.PONG) return;
+  const type = messageType(ev.detail);
+  if (type === MSG.RUMBLE) { rumble.onRumble(decodeRumble(ev.detail)); return; }
+  if (type !== MSG.PONG) return;
   const p = decodePong(ev.detail);
   if (p) lat.onPong(p, performance.now());
 });
-transport.addEventListener('status', (ev) => { if (ev.detail.state !== 'ready') lat.dropPending(); });
+transport.addEventListener('status', (ev) => {
+  if (ev.detail.state !== 'ready') { lat.dropPending(); rumble.stop(); }
+});
 setInterval(() => {
   const now = performance.now();
   lat.sweep(now);
@@ -63,11 +77,9 @@ function doConnect() {
   persistConfig(host, token);
   transport.connect(buildUrl(host, token));
 }
-$('connect-btn').addEventListener('click', doConnect);
+// The form's submit (button click or Enter in either field) connects; no page navigation.
+$('connect-form').addEventListener('submit', (e) => { e.preventDefault(); doConnect(); });
 $('disconnect-btn').addEventListener('click', () => transport.disconnect());
-for (const id of ['host', 'token']) {
-  $(id).addEventListener('keydown', (e) => { if (e.key === 'Enter') doConnect(); });
-}
 
 // ---- pad state -----------------------------------------------------------
 /** pad index -> {seq, lastSent, lastSendAt, state, ignored, id, ui} */
@@ -96,6 +108,7 @@ function removePad(index, now) {
   if (!p.ignored) sendBinary(encodePadGone(index), now ?? performance.now());
   p.ui.root.remove();
   pads.delete(index);
+  rumble.onRumble({ pad: index, large: 0, small: 0 });
   updatePadCount();
 }
 
@@ -158,6 +171,7 @@ window.__ghostpad = { pollStats, lat, get pollMode() { return pollMode; }, get s
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') {
     paused = true; // stop heartbeats; the server watchdog neutralises the pads
+    rumble.stop();
     scheduler.stop();
   } else {
     paused = false;
@@ -219,9 +233,20 @@ function buildPadUi(index, id, ignored) {
     }
     body.append(grid, analog);
     root.append(body);
+    const rum = el('div', 'rumble', '');
+    rum.append(el('span', 'k', 'Rumble'), el('span', 'rum-l', 'L 0'), el('span', 'rum-s', 'S 0'));
+    rum.title = 'Last RUMBLE magnitudes received from the daemon (large / small motor, 0-255)';
+    root.append(rum);
+    ui.rumble = rum;
   }
   $('pads').append(root);
   return ui;
+}
+
+function renderRumble(rum, large, small) {
+  rum.classList.toggle('on', large > 0 || small > 0);
+  rum.querySelector('.rum-l').textContent = `L ${large}`;
+  rum.querySelector('.rum-s').textContent = `S ${small}`;
 }
 
 function updatePadCount() {

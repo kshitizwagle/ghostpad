@@ -43,12 +43,13 @@ Caveat: the HUD measures the network path to the daemon only. It does not includ
 controller's Bluetooth link, the wait for the next poll, ViGEm, the game or the display.
 A green HUD does not mean the added latency is within budget; that needs button-to-photon.
 
-PINGs are only sent while the poll loop is ticking. The daemon watchdog counts any
-frame as liveness, so a stalled poll loop must not be hidden behind PINGs.
+PINGs are only sent while the poll loop is ticking. The daemon watchdog counts only
+input frames (STATE, PAD_GONE) as liveness, not PINGs, so a stalled poll loop is not
+hidden behind PINGs.
 
 ## b. bench.py
 
-Stdlib only. Sends STATE at `--rate` with values that change every frame, plus PINGs, and
+Stdlib only. Tests: `python3 -m unittest discover -s bench`. Sends STATE at `--rate` with values that change every frame, plus PINGs, and
 prints RTT, network RTT, jitter, loss, the generator's own send-interval accuracy and the
 daemon's `/stats`.
 
@@ -85,8 +86,10 @@ Reading the output:
 display lag.** They show the daemon and protocol overhead only, as a floor.
 
 The daemon also serves `GET /stats` (JSON) at any time, e.g.
-`curl http://<pc-ip>:47800/stats`, and logs the same snapshot on exit. It is
-unauthenticated like the static files.
+`curl http://<pc-ip>:47800/stats`, and logs the same snapshot on exit. When the daemon
+runs with `--token`, `/stats` needs `?token=SECRET` (403 otherwise), e.g.
+`curl "http://<pc-ip>:47800/stats?token=SECRET"`; `bench.py` appends it automatically
+when `--token` is given. The static files stay unauthenticated.
 
 ## c. Button-to-photon with a 240 fps phone camera
 

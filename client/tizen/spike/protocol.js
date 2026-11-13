@@ -1,11 +1,11 @@
-// COPY of client/web/protocol.js (ghostpad protocol v1), made for the Tizen spike.
+// GENERATED from client/web/protocol.js (ghostpad protocol v1). DO NOT EDIT BY HAND.
+// Regenerate with: node client/tizen/sync-protocol.mjs   (CI/test runs it with --check)
 // Tizen packaging needs every file inside the .wgt, so it cannot import ../../web/.
 // Differences from the original, and nothing else:
 //   1. `export` keywords removed, so this loads as a classic <script> (no ES modules).
 //   2. `catch {` rewritten to `catch (e) {` (ES2017-safe).
-//   3. Everything is exposed on window.GhostpadProtocol at the bottom.
-// Source of truth for the wire format is DESIGN.md. Re-generate this file with the
-// command in docs/tizen-spike.md if client/web/protocol.js changes.
+//   3. Everything exported is exposed on window.GhostpadProtocol at the bottom.
+// Source of truth for the wire format is DESIGN.md.
 
 (function () {
 'use strict';
@@ -210,10 +210,12 @@ function closeMessage(code) {
 }
 
 window.GhostpadProtocol = {
-  PROTOCOL_VERSION: PROTOCOL_VERSION, MSG: MSG, SIZE: SIZE, CLOSE: CLOSE, XB: XB,
-  BUTTON_MAP: BUTTON_MAP, mapGamepad: mapGamepad, neutralState: neutralState,
-  statesEqual: statesEqual, encodeState: encodeState, encodePing: encodePing,
-  encodePadGone: encodePadGone, decodePong: decodePong, messageType: messageType,
-  encodeHello: encodeHello, parseControl: parseControl, closeMessage: closeMessage
+  PROTOCOL_VERSION: PROTOCOL_VERSION, MSG: MSG, SIZE: SIZE, CLOSE: CLOSE,
+  MAX_PADS: MAX_PADS, XB: XB, BUTTON_MAP: BUTTON_MAP, clamp: clamp,
+  scaleTrigger: scaleTrigger, scaleAxis: scaleAxis, mapGamepad: mapGamepad,
+  neutralState: neutralState, statesEqual: statesEqual, encodeState: encodeState,
+  encodePing: encodePing, encodePadGone: encodePadGone, decodePong: decodePong,
+  decodeRumble: decodeRumble, messageType: messageType, encodeHello: encodeHello,
+  parseControl: parseControl, closeMessage: closeMessage
 };
 })();

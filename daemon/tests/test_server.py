@@ -206,6 +206,49 @@ class WebSocketTests(ServerTestBase):
             self.assertLess(loop.time() - t0, 0.26)
         self.assertGreaterEqual(loop.time() - t0, 0.15)
 
+    async def test_ping_does_not_keep_watchdog_alive(self):
+        c = await self.welcomed()
+        await c.send_binary(p.encode_state(0, 1, S1))
+        await self.settle(0.05)
+        loop = asyncio.get_running_loop()
+        t0 = loop.time()
+        i = 0
+        while self.backend.states[0] != p.NEUTRAL:
+            i += 1
+            await c.send_binary(p.encode_ping(i, 1.0))
+            await c.send_raw(build_frame(0x9, b"x"))  # WS-level ping too
+            await asyncio.sleep(0.02)
+            self.assertLess(loop.time() - t0, 0.4)
+        self.assertGreaterEqual(loop.time() - t0, 0.12)
+        # PINGs are still answered after the trip
+        await c.send_binary(p.encode_ping(999, 2.0))
+        while True:
+            op, data = await c.recv()
+            if op == 2 and p.decode_pong(data)[0] == 999:
+                break
+
+    async def test_pad_gone_counts_as_input(self):
+        c = await self.welcomed()
+        await c.send_binary(p.encode_state(0, 1, S1))
+        await c.send_binary(p.encode_state(1, 1, S1))
+        for _ in range(8):  # 160 ms of re-sent PAD_GONE for a pad that is not plugged
+            await asyncio.sleep(0.02)
+            await c.send_binary(p.encode_pad_gone(3))
+        await self.settle(0.05)
+        self.assertEqual(self.backend.states[0], S1)  # PAD_GONE refreshed the timer
+
+    async def test_no_pads_no_watchdog_trips(self):
+        c = await self.welcomed()
+        await c.send_binary(p.encode_ping(1, 1.0))
+        await asyncio.sleep(0.5)
+        self.assertEqual(self.server.stats.watchdog_trips, 0)
+        self.assertEqual(self.backend.events, [])
+        # also after the only pad is unplugged
+        await c.send_binary(p.encode_state(0, 1, S1))
+        await c.send_binary(p.encode_pad_gone(0))
+        await asyncio.sleep(0.5)
+        self.assertEqual(self.server.stats.watchdog_trips, 0)
+
     async def test_takeover_closes_old_with_4001(self):
         a = await self.welcomed(name="a")
         await a.send_binary(p.encode_state(0, 1, S1))
@@ -250,6 +293,90 @@ class WebSocketTests(ServerTestBase):
         self.assertEqual(status, 426)
 
 
+class HelloTimeoutTests(ServerTestBase):
+    hello_timeout = 0.15
+
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        await self.server.stop()
+        self.backend.events.clear()
+        self.backend.closed = False
+        self.server = GhostpadServer(self.backend, host="127.0.0.1", port=0,
+                                     hello_timeout=self.hello_timeout)
+        await self.server.start()
+        self.port = self.server.port
+
+    async def test_silent_client_closed_4003(self):
+        c = await self.connect(hello=False)
+        self.assertIsNone(await c.recv())
+        self.assertEqual(c.close_code, 4003)
+
+    async def test_binary_spam_does_not_extend_deadline(self):
+        c = await self.connect(hello=False)
+        for _ in range(5):
+            await c.send_binary(p.encode_state(0, 1, S1))
+            await asyncio.sleep(0.05)
+        self.assertIsNone(await c.recv())
+        self.assertEqual(c.close_code, 4003)
+        self.assertEqual(self.backend.events, [])
+
+    async def test_valid_hello_not_closed(self):
+        c = await self.welcomed()
+        await asyncio.sleep(0.4)
+        self.assertFalse(c.closed)
+        await c.send_binary(p.encode_state(0, 1, S1))
+        await self.settle()
+        self.assertEqual(self.backend.applied(0), [S1])
+
+    async def test_silent_client_does_not_kick_owner(self):
+        a = await self.welcomed(name="a")
+        s = await self.connect(hello=False)
+        self.assertIsNone(await s.recv())
+        self.assertFalse(a.closed)
+
+
+class TraceTests(ServerTestBase):
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        await self.server.stop()
+        self.backend.events.clear()
+        self.backend.closed = False
+        self.server = GhostpadServer(self.backend, host="127.0.0.1", port=0, trace=True)
+        await self.server.start()
+        self.port = self.server.port
+
+    async def test_trace_logs_pad_events(self):
+        with self.assertLogs("ghostpad.server", level="DEBUG") as cm:
+            c = await self.welcomed()
+            await c.send_binary(p.encode_state(0, 1, S1))
+            await c.send_binary(p.encode_state(1, 1, S1))
+            await c.send_binary(p.encode_pad_gone(1))
+            await self.settle(0.05)
+            await c.send_close()
+            await self.settle(0.05)
+        text = "\n".join(r.getMessage() for r in cm.records if r.levelname == "DEBUG")
+        for needle in ("pad 0 connect", "pad 0 update", "PAD_GONE", "pad 0 neutral, unplug"):
+            self.assertIn(needle, text)
+
+    async def test_trace_logs_watchdog_neutral(self):
+        with self.assertLogs("ghostpad.server", level="DEBUG") as cm:
+            c = await self.welcomed()
+            await c.send_binary(p.encode_state(0, 1, S1))
+            await asyncio.sleep(0.4)
+        self.assertTrue(any("neutral (watchdog)" in r.getMessage() for r in cm.records))
+
+
+class TraceOffTests(ServerTestBase):
+    async def test_no_trace_records_by_default(self):
+        with self.assertLogs("ghostpad.server", level="DEBUG") as cm:
+            log_marker = __import__("logging").getLogger("ghostpad.server")
+            c = await self.welcomed()
+            await c.send_binary(p.encode_state(0, 1, S1))
+            await self.settle()
+            log_marker.debug("marker")
+        self.assertFalse(any("trace" in r.getMessage() for r in cm.records))
+
+
 class TokenTests(ServerTestBase):
     token = "s3cret"
 
@@ -276,8 +403,29 @@ class TokenTests(ServerTestBase):
         self.assertIsNone(await bad.recv())
         self.assertFalse(a.closed)
 
+    async def test_stats_requires_token(self):
+        for path in ("/stats", "/stats?token=nope", "/stats?token="):
+            status, _, body = await http_get(self.port, path)
+            self.assertEqual(status, 403, path)
+            self.assertNotIn(b"recv_apply", body)
+        status, _, _ = await http_get(self.port, "/stats", method="HEAD")
+        self.assertEqual(status, 403)
+
+    async def test_stats_with_token_ok(self):
+        status, h, body = await http_get(self.port, "/stats?token=s3cret")
+        self.assertEqual(status, 200)
+        self.assertIn("recv_apply", json.loads(body))
+        status, _, _ = await http_get(self.port, "/stats?token=s3cret", method="HEAD")
+        self.assertEqual(status, 200)
+
     async def test_static_not_token_protected(self):
         status, _, _ = await http_get(self.port, "/")
+        self.assertEqual(status, 200)
+
+
+class StatsOpenTests(ServerTestBase):
+    async def test_stats_open_without_token_configured(self):
+        status, _, _ = await http_get(self.port, "/stats")
         self.assertEqual(status, 200)
 
 

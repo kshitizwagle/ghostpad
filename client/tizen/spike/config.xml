@@ -1,7 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
   ghostpad M4 Tizen TV spike. Sideload only (developer-signed), never store-submitted.
-  UNVERIFIED on a real TV. See docs/tizen-spike.md.
+  UNVERIFIED on a real TV, and config.xml specifics (namespaces, id format, required_version,
+  CSP, <access>) could not be checked against primary docs. See docs/tizen-spike.md.
+  Samsung's TVWindow page says PIP-dependent apps declare http://tizen.org/feature/tv.pip;
+  not added here so the spike still installs if the feature is absent (main.js logs getCapability).
   Package id must be exactly 10 alphanumeric chars; application id = <package>.<name>.
   required_version 6.0 is deliberately low so any Tizen 6.0+ TV (2021+) accepts it;
   the 2025 U8500F should be Tizen 9.0.
