@@ -1,9 +1,10 @@
-"""PyInstaller entry point for ghostpad.exe. UNTESTED on Windows.
+"""PyInstaller entry point for ghostpad.exe. Verified on Windows 11 (one-folder and one-file).
 
 Why a wrapper instead of `-m ghostpad`: `DEFAULT_WEB_ROOT` in daemon/ghostpad/server.py is
 computed from `__file__` (`parents[2] / "client" / "web"`), which is wrong inside a frozen
-one-file build (files are extracted to `sys._MEIPASS`). Rather than touch the package, this
-wrapper injects `--web-root <_MEIPASS>/client/web` unless the user passed one.
+build (data lives under `sys._MEIPASS`: `_internal/` one-folder, `%TEMP%\\_MEI*` one-file).
+Rather than touch the package, this wrapper injects `--web-root <_MEIPASS>/client/web` unless
+the user passed one.
 
 With a `--noconsole` build `sys.stdout`/`sys.stderr` are None; they are redirected to a log
 file under %LOCALAPPDATA%\\ghostpad so logging does not break.

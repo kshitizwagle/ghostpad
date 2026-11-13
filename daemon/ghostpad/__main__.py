@@ -8,7 +8,7 @@ import logging
 import signal
 import sys
 
-from .backends.base import PadBackend
+from .backends.base import BackendUnavailable, PadBackend
 from .server import DEFAULT_WEB_ROOT, GhostpadServer
 from .stats import Stats
 
@@ -22,14 +22,14 @@ def make_backend(choice: str) -> PadBackend:
         return MockBackend()
     if choice == "vigem":
         from .backends.vigem import VigemBackend
-        return VigemBackend()
+        return VigemBackend()  # BackendUnavailable propagates: explicit choice, no fallback
     # auto
     if sys.platform == "win32":
         try:
             from .backends.vigem import VigemBackend
             return VigemBackend()
-        except ImportError:
-            log.warning("vgamepad not importable; falling back to the mock backend")
+        except BackendUnavailable as e:
+            log.warning("%s; falling back to the mock backend (no real virtual pad)", e)
     else:
         log.warning("not on Windows; using the mock backend (no real virtual pad)")
     return MockBackend()
@@ -62,10 +62,17 @@ async def run(args: argparse.Namespace) -> None:
         except (NotImplementedError, RuntimeError):
             pass  # Windows: KeyboardInterrupt cancels this task; finally still runs
     await server.start()
+    old_break = None
+    if sys.platform == "win32":
+        # Ctrl+Break otherwise ends the process at once (0xC000013A), skipping the
+        # neutral-then-unplug release below. Signal handlers wake the proactor loop.
+        old_break = signal.signal(signal.SIGBREAK, lambda *_: loop.call_soon_threadsafe(stop.set))
     try:
         await stop.wait()
     finally:
         await server.stop()
+        if old_break is not None:
+            signal.signal(signal.SIGBREAK, old_break)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -78,7 +85,7 @@ def main(argv: list[str] | None = None) -> int:
         asyncio.run(run(args))
     except KeyboardInterrupt:
         pass
-    except ImportError as e:
+    except BackendUnavailable as e:
         log.error("backend unavailable: %s", e)
         return 2
     except OSError as e:

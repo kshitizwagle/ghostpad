@@ -45,7 +45,8 @@ export function generate(src) {
 export function check() {
   const want = generate(readFileSync(SRC, 'utf8'));
   let have = null;
-  try { have = readFileSync(DST, 'utf8'); } catch { /* missing */ }
+  // Compare with LF endings: git's core.autocrlf checks the copy out with CRLF on Windows.
+  try { have = readFileSync(DST, 'utf8').replace(/\r\n/g, '\n'); } catch { /* missing */ }
   return { ok: have === want, want };
 }
 

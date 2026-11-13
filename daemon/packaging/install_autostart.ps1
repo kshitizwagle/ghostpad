@@ -1,17 +1,17 @@
 <#
 .SYNOPSIS
-  Register a Task Scheduler task that starts ghostpad at logon (hidden). UNTESTED on Windows.
+  Register a Task Scheduler task that starts ghostpad at logon (hidden).
 .EXAMPLE
   .\install_autostart.ps1 -Token SECRET
-  .\install_autostart.ps1 -Exe C:\Tools\ghostpad.exe -Port 47800 -Bind 0.0.0.0
+  .\install_autostart.ps1 -Exe C:\Tools\ghostpad\ghostpad.exe -Port 47800 -Bind 0.0.0.0
 .NOTES
-  Runs as the current user, limited rights, at that user's logon. No admin needed (not
-  verified; ViGEmBus must already be installed). The token ends up in the task definition,
-  readable by that user. Remove with uninstall_autostart.ps1.
+  Runs as the current user, limited rights, at that user's logon. Registering needs no admin
+  (verified on Windows 11). ViGEmBus must already be installed. The token ends up in the task
+  definition, readable by that user. Remove with uninstall_autostart.ps1.
 #>
 [CmdletBinding()]
 param(
-  [string]$Exe = (Join-Path $PSScriptRoot 'dist\ghostpad.exe'),
+  [string]$Exe = '',
   [string]$TaskName = 'ghostpad',
   [int]$Port = 47800,
   [string]$Bind = '0.0.0.0',
@@ -20,6 +20,13 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+if (-not $Exe) {
+  # build_exe.py output: one-folder (default) or --onefile
+  $Exe = @('dist\ghostpad\ghostpad.exe', 'dist\ghostpad.exe') |
+    ForEach-Object { Join-Path $PSScriptRoot $_ } |
+    Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+  if (-not $Exe) { throw "ghostpad exe not found under $PSScriptRoot\dist (run build_exe.py, or pass -Exe)" }
+}
 if (-not (Test-Path -LiteralPath $Exe)) { throw "ghostpad exe not found: $Exe (run build_exe.py, or pass -Exe)" }
 $Exe = (Resolve-Path -LiteralPath $Exe).Path
 

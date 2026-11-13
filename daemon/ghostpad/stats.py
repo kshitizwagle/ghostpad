@@ -27,6 +27,7 @@ class Stats:
         self.prehello_drops = 0  # binary frames before a valid hello
         self.watchdog_trips = 0
         self.pings = 0
+        self.rumble_sent = 0  # RUMBLE messages sent to clients
         self._t0 = monotonic()
 
     def record(self, ns: int) -> None:
@@ -63,6 +64,7 @@ class Stats:
             "prehello_drops": self.prehello_drops,
             "watchdog_trips": self.watchdog_trips,
             "ping_count": self.pings,
+            "rumble_sent": self.rumble_sent,
             "uptime_s": round(self.uptime_s, 1),
         }
 
@@ -79,4 +81,4 @@ class Stats:
                     f"p95={ra['p95_us']}us p99={ra['p99_us']}us max={ra['max_us']}us")
         return (f"{head} frames={r['frames_received']} stale={r['stale_drops']} "
                 f"malformed={r['malformed_drops']} watchdog={r['watchdog_trips']} "
-                f"pings={r['ping_count']} uptime={r['uptime_s']}s")
+                f"pings={r['ping_count']} rumble={r['rumble_sent']} uptime={r['uptime_s']}s")

@@ -50,7 +50,7 @@ _REASONS = {200: "OK", 400: "Bad Request", 403: "Forbidden", 404: "Not Found", 4
 
 class Client:
     __slots__ = ("ws", "name", "active", "plugged", "last_seq", "neutralized",
-                 "last_input_ns")
+                 "last_input_ns", "rumble")
 
     def __init__(self, ws: wsproto.WebSocket, max_pads: int) -> None:
         self.ws = ws
@@ -60,6 +60,7 @@ class Client:
         self.last_seq: list[int | None] = [None] * max_pads
         self.neutralized = False
         self.last_input_ns = perf_counter_ns()  # last STATE / PAD_GONE (not PING)
+        self.rumble: list[tuple[int, int]] = [(0, 0)] * max_pads  # last RUMBLE sent per pad
 
 
 class GhostpadServer:
@@ -91,6 +92,7 @@ class GhostpadServer:
         self._clients: set[Client] = set()
         self._server: asyncio.Server | None = None
         self._tasks: list[asyncio.Task] = []
+        self._loop: asyncio.AbstractEventLoop | None = None
         self.dropped = 0
 
     # -- lifecycle ----------------------------------------------------------
@@ -100,6 +102,8 @@ class GhostpadServer:
             self._handle, self.host, self.port, limit=wsproto.MAX_FRAME + 1024
         )
         self.port = self._server.sockets[0].getsockname()[1]
+        self._loop = asyncio.get_running_loop()
+        self.backend.set_rumble_handler(self._rumble_from_backend)
         self._tasks.append(asyncio.create_task(self._watchdog_loop()))
         if self._stats_interval:
             self._tasks.append(asyncio.create_task(self._stats_loop()))
@@ -108,6 +112,7 @@ class GhostpadServer:
 
     async def stop(self) -> None:
         """Neutralise and unplug everything, close connections and backend."""
+        self.backend.set_rumble_handler(None)
         if self._server is not None:
             self._server.close()
         for t in self._tasks:
@@ -162,6 +167,7 @@ class GhostpadServer:
                     self.backend.neutral(pad)
                 except Exception:
                     log.exception("backend.neutral(%d) failed", pad)
+                self._rumble_off(c, pad)
 
     def _release(self, c: Client) -> None:
         """Neutral then unplug every pad of `c`. Idempotent."""
@@ -177,8 +183,43 @@ class GhostpadServer:
                     self.backend.disconnect(pad)
                 except Exception:
                     log.exception("backend release of pad %d failed", pad)
+                self._rumble_off(c, pad)
         if self._owner is c:
             self._owner = None
+
+    # -- rumble (backend -> owning client) --------------------------------------
+
+    def _rumble_from_backend(self, pad: int, large: int, small: int) -> None:
+        """RumbleHandler: may run on a driver thread, so hop onto the loop."""
+        loop = self._loop
+        if loop is None:
+            return
+        try:
+            loop.call_soon_threadsafe(self._on_rumble, pad, large, small)
+        except RuntimeError:
+            pass  # loop closed during shutdown
+
+    def _on_rumble(self, pad: int, large: int, small: int) -> None:
+        c = self._owner
+        # While the watchdog holds the pads neutral the client counts as stalled: no rumble
+        # until its next STATE (changes from the game after that are sent as usual).
+        if c is None or c.neutralized or not 0 <= pad < len(c.plugged) or not c.plugged[pad]:
+            return
+        self._send_rumble(c, pad, large & 0xFF, small & 0xFF)
+
+    def _rumble_off(self, c: Client, pad: int) -> None:
+        if c.rumble[pad] != (0, 0):
+            self._send_rumble(c, pad, 0, 0)
+
+    def _send_rumble(self, c: Client, pad: int, large: int, small: int) -> None:
+        """Send on change only; the client re-issues the effect while it is non-zero."""
+        if c.rumble[pad] == (large, small):
+            return
+        c.rumble[pad] = (large, small)
+        self.stats.rumble_sent += 1
+        if self._trace:
+            log.debug("trace pad %d rumble large=%d small=%d", pad, large, small)
+        c.ws.send_binary_nowait(proto.encode_rumble(pad, large, small))
 
     # -- connection entry ---------------------------------------------------
 
@@ -422,3 +463,4 @@ class GhostpadServer:
                 self.backend.disconnect(pad)
             except Exception:
                 log.exception("pad_gone release failed (pad %d)", pad)
+            self._rumble_off(client, pad)

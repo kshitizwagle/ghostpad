@@ -140,6 +140,11 @@ class WebSocket:
         self._write(encode_frame(OP_BIN, data))
         await self._drain()
 
+    def send_binary_nowait(self, data: bytes) -> None:
+        """Queue a binary frame without draining (sync, loop thread). No-op after our close."""
+        if not self.close_sent:
+            self._write(encode_frame(OP_BIN, data))
+
     async def _drain(self) -> None:
         try:
             await self._writer.drain()
