@@ -166,6 +166,19 @@ Server reply:
 - Binary frames before `hello` are dropped.
 - A connection that completes the upgrade but sends no valid `hello` within **5 s** is closed with code **4003**. The deadline is absolute; junk frames do not extend it. Server parameter `hello_timeout` (default 5 s).
 
+Client diagnostic line (optional, after `hello`; for clients without a usable console, e.g. the TV):
+
+```json
+{"type":"log","msg":"<text>"}
+```
+
+- Logged at INFO by the `ghostpad.client` logger as `<client name>: <text>`.
+- `msg` is truncated to 500 chars; non-printable chars (newlines included) are escaped.
+- Rate limit per connection: burst 50, then 20 lines/s. Excess lines are dropped and
+  counted; the count is logged as a WARNING before the next accepted line.
+- Other text after `hello` is ignored. Additive: v1 daemons before this ignore it too, so
+  the version is unchanged.
+
 ### Close codes
 
 | Code | Meaning |

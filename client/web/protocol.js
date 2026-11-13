@@ -178,6 +178,11 @@ export function encodeHello(clientName) {
   return JSON.stringify({ type: 'hello', version: PROTOCOL_VERSION, client: clientName });
 }
 
+/** Diagnostic line for the daemon log (after hello; truncated to 500 chars, rate-limited). */
+export function encodeLog(msg) {
+  return JSON.stringify({ type: 'log', msg: String(msg) });
+}
+
 /** Parse a text frame from the server. Returns the object or null. */
 export function parseControl(text) {
   try {
