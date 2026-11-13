@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
+import contextlib
 import hashlib
 import json
 import math
@@ -365,10 +366,41 @@ async def amain(args: argparse.Namespace) -> dict:
                 proc.kill()
 
 
+@contextlib.contextmanager
+def fine_timer():
+    """On Windows, raise the timer resolution to 1 ms for the run. No-op elsewhere.
+
+    Pacing on Windows needs this and the selector loop (`_loop_factory`). Measured 4 ms
+    asyncio.sleep pacing with a socket open (Windows 11, Python 3.12, p95):
+    proactor 31 ms, proactor + 1 ms timer 20 ms, selector 16 ms, selector + 1 ms timer 5 ms.
+    """
+    winmm = None
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            winmm = ctypes.WinDLL("winmm")
+            if winmm.timeBeginPeriod(1) != 0:
+                winmm = None
+        except (OSError, AttributeError):
+            winmm = None
+    try:
+        yield
+    finally:
+        if winmm is not None:
+            winmm.timeEndPeriod(1)
+
+
+def _loop_factory():
+    # Windows defaults to the proactor loop, whose timers overshoot by ~20-30 ms once a
+    # socket is open (see fine_timer). The bench needs only TCP streams, which select() handles.
+    return asyncio.SelectorEventLoop() if sys.platform == "win32" else asyncio.new_event_loop()
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     try:
-        result = asyncio.run(amain(args))
+        with fine_timer(), asyncio.Runner(loop_factory=_loop_factory) as runner:
+            result = runner.run(amain(args))
     except (OSError, ConnectionError, RuntimeError) as e:
         print(f"bench: {e}", file=sys.stderr)
         return 1
