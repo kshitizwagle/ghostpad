@@ -144,7 +144,10 @@ test('fast scheduler ticks roughly every 4 ms and stops cleanly', async () => {
   await new Promise((r) => setTimeout(r, 100));
   s.stop();
   const at = n;
-  assert.ok(at >= 10 && at <= 30, `ticks ${at}`);
+  // Node on Windows does not raise the system timer resolution, so a 4 ms interval fires
+  // about every 15.6 ms there (~6-7 ticks in 100 ms). This checks the scheduler, not the OS.
+  const min = process.platform === 'win32' ? 4 : 10;
+  assert.ok(at >= min && at <= 30, `ticks ${at}`);
   await new Promise((r) => setTimeout(r, 30));
   assert.equal(n, at);
 });
