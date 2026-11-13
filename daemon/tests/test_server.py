@@ -1,6 +1,7 @@
 import asyncio
 import json
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -481,6 +482,99 @@ class StaticTests(ServerTestBase):
         raw = await r.read()
         self.assertIn(b" 400 ", raw.split(b"\r\n")[0])
         w.close()
+
+
+class RumbleTests(ServerTestBase):
+    """Backend force feedback -> RUMBLE (0x05) to the owning client."""
+
+    async def plugged_client(self, pads=(0,), **kw) -> WSClient:
+        c = await self.welcomed(**kw)
+        for pad in pads:
+            await c.send_binary(p.encode_state(pad, 1, S1))
+        while not set(pads) <= self.backend.plugged:
+            await asyncio.sleep(0.005)
+        return c
+
+    def emit_from_thread(self, pad: int, large: int, small: int) -> None:
+        t = threading.Thread(target=self.backend.emit_rumble, args=(pad, large, small))
+        t.start()
+        t.join()
+
+    async def next_rumble(self, c: WSClient, timeout: float = 1.0):
+        """Next RUMBLE, skipping PONGs; None on close or timeout."""
+        while True:
+            try:
+                msg = await c.recv(timeout)
+            except asyncio.TimeoutError:
+                return None
+            if msg is None:
+                return None
+            op, data = msg
+            if op == 2 and data[0] == p.MSG_RUMBLE:
+                return p.decode_rumble(data)
+
+    async def assert_no_rumble(self, c: WSClient) -> None:
+        """A PING round trip proves nothing was queued before the PONG."""
+        await c.send_binary(p.encode_ping(77, 1.0))
+        op, data = await c.recv()
+        self.assertEqual(data[0], p.MSG_PONG, f"unexpected frame {data!r}")
+
+    async def test_forwarded_from_another_thread_on_change_only(self):
+        c = await self.plugged_client()
+        self.emit_from_thread(0, 200, 50)
+        self.assertEqual(await self.next_rumble(c), (0, 200, 50))
+        self.emit_from_thread(0, 200, 50)  # unchanged: not re-sent
+        await self.assert_no_rumble(c)
+        self.emit_from_thread(0, 0, 0)
+        self.assertEqual(await self.next_rumble(c), (0, 0, 0))
+        self.assertEqual(self.server.stats.rumble_sent, 2)
+
+    async def test_unplugged_pad_and_no_owner_ignored(self):
+        self.backend.emit_rumble(0, 9, 9)  # no client at all
+        c = await self.plugged_client()
+        self.backend.emit_rumble(1, 9, 9)  # pad 1 not plugged by the owner
+        self.backend.emit_rumble(7, 9, 9)  # out of range
+        await self.assert_no_rumble(c)
+        self.assertEqual(self.server.stats.rumble_sent, 0)
+
+    async def test_pad_gone_sends_off(self):
+        c = await self.plugged_client(pads=(0, 1))
+        self.backend.emit_rumble(1, 255, 255)
+        self.assertEqual(await self.next_rumble(c), (1, 255, 255))
+        await c.send_binary(p.encode_pad_gone(1))
+        self.assertEqual(await self.next_rumble(c), (1, 0, 0))
+        await c.send_binary(p.encode_pad_gone(0))  # pad 0 never rumbled: nothing sent
+        await self.assert_no_rumble(c)
+
+    async def test_watchdog_sends_off_and_mutes_until_input(self):
+        c = await self.plugged_client()
+        self.backend.emit_rumble(0, 100, 0)
+        self.assertEqual(await self.next_rumble(c), (0, 100, 0))
+        self.assertEqual(await self.next_rumble(c), (0, 0, 0))  # watchdog after ~200 ms
+        self.assertEqual(self.server.stats.watchdog_trips, 1)
+        self.backend.emit_rumble(0, 120, 0)  # client counts as stalled: not sent
+        await self.assert_no_rumble(c)
+        await c.send_binary(p.encode_state(0, 2, S1))
+        await self.settle()
+        self.backend.emit_rumble(0, 130, 0)
+        self.assertEqual(await self.next_rumble(c), (0, 130, 0))
+
+    async def test_takeover_sends_off_before_4001(self):
+        a = await self.plugged_client(name="a")
+        self.backend.emit_rumble(0, 50, 60)
+        self.assertEqual(await self.next_rumble(a), (0, 50, 60))
+        b = await self.welcomed(name="b")
+        self.assertEqual(await self.next_rumble(a), (0, 0, 0))
+        self.assertIsNone(await a.recv())
+        self.assertEqual(a.close_code, 4001)
+        self.backend.emit_rumble(0, 70, 70)  # b has not plugged pad 0
+        await self.assert_no_rumble(b)
+
+    async def test_stop_detaches_handler(self):
+        await self.plugged_client()
+        await self.server.stop()
+        self.backend.emit_rumble(0, 1, 1)  # must not raise or reach a closed loop
+        self.assertIsNone(self.backend._rumble_handler)
 
 
 if __name__ == "__main__":

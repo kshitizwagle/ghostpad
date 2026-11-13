@@ -40,6 +40,10 @@ class MockBackend(PadBackend):
         self.closed = True
         self.events.append(("close", -1, None))
 
+    def emit_rumble(self, pad: int, large: int, small: int) -> None:
+        """Test hook: act like the game set the motors of `pad` (callable from any thread)."""
+        self._emit_rumble(pad, large, small)
+
     def ops(self) -> list[tuple[str, int]]:
         return [(op, pad) for op, pad, _ in self.events]
 
