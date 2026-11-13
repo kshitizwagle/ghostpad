@@ -47,7 +47,7 @@ at most 12 lines/s (daemon limit 20/s).
 
 | Key | Action |
 |---|---|
-| Info or Green (`i`/`g` on a PC keyboard) | Cycle overlay: full, hidden, mini line, ... |
+| OK/Enter, Info or Green (`i`/`g` on a PC keyboard) | Cycle overlay: full, hidden, mini line, ... (the Samsung Smart Remote has only OK, arrows and Back of these) |
 | Yellow (`y`) | Toggle video z-order BEHIND / FRONT (re-calls `show`) |
 | Blue (`b`) | Hide / show the TV window |
 | Red (`r`) | Re-run detection and source listing |

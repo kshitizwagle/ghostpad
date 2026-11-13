@@ -171,7 +171,9 @@
       if (k === KEY.DOWN || k === KEY.RIGHT) { pickIndex = (pickIndex + 1) % sources.length; cancelAutoPick(); ev.preventDefault(); return; }
       if (k === KEY.ENTER) { cancelAutoPick(); pickSource(sources[pickIndex]); ev.preventDefault(); return; }
     }
-    if (k === KEY.INFO || k === KEY.GREEN || ev.key === 'i' || ev.key === 'g') {
+    // Enter (remote OK) too: the Samsung Smart Remote has no Info or colour keys. Controller
+    // buttons do not arrive as key events on the U8500F (verified), so A cannot trigger this.
+    if (k === KEY.INFO || k === KEY.GREEN || k === KEY.ENTER || ev.key === 'i' || ev.key === 'g') {
       overlayMode = (overlayMode + 1) % 3; applyOverlayMode(); ev.preventDefault();
     } else if (k === KEY.YELLOW || ev.key === 'y') {
       toggleZ(); ev.preventDefault();
