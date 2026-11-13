@@ -10,7 +10,8 @@ could not be fetched (developer.samsung.com other pages, docs.tizen.org and GitH
 blocked by the sandbox/approval policy) and must be confirmed with the checklist at the end.
 
 App: `client/tizen/spike/` (`config.xml`, `index.html`, `main.js`, `style.css`,
-`protocol.js` copy, `icon.png` placeholder).
+`protocol.js` copy, `local-config.js` with empty PC settings, `icon.png` placeholder).
+`client/tizen/package_spike.py` builds an unsigned `.wgt` with the PC address filled in.
 
 ## Design choices
 
@@ -22,12 +23,25 @@ App: `client/tizen/spike/` (`config.xml`, `index.html`, `main.js`, `style.css`,
 | Transparent page, video `zPosition: "BEHIND"` first | Verified: default `zPosition` is FRONT, `BEHIND` places the TV window behind the web app (since 2.4); BEHIND is the only way to draw an overlay over gameplay. Whether 2025 TVs honour it is UNVERIFIED |
 | `<access origin="*">` | Spike only; narrow to the PC IP in M5 |
 
-Regenerate `protocol.js` after protocol changes (from repo root; then re-add the header
-comment, or just copy the header from the existing file):
+Regenerate `protocol.js` after protocol changes (from repo root):
+`node client/tizen/sync-protocol.mjs`. The web test suite fails while the copy is stale.
 
-```
-sed -e 's/^export //' -e 's/} catch {/} catch (e) {/' client/web/protocol.js
-```
+## Results in the daemon log
+
+With `pcHost` set, the spike sends every log line to the daemon as a `{"type":"log"}`
+message (DESIGN.md), plus a status line every 5 s. They show up in the daemon console as
+`INFO ghostpad.client: tizen-spike: ...`, so no web inspector is needed. Logged:
+
+| Line | Content |
+|---|---|
+| Step results | API presence, VIDEOSOURCE (raw JSON), HDMI pick, `setSource`, `show` per z-order |
+| `keydown <code>` | Remote keys, and any controller button the TV maps to a key (B as Back?) |
+| `padN buttons=[..] hidden=.. video=..` | Every button change, with page visibility and video state at that moment |
+| `gamepadconnected` / `gamepaddisconnected` | id and mapping |
+| `status ...` (every 5 s) | `hidden`, rAF/s, timer ticks/s, gamepad updates/s, pads and mappings, video z-order, resolution, STATE sent, median RTT, step letters (O/F/S/P) |
+
+Lines logged before the WebSocket is up are queued (last 300) and sent after the welcome,
+at most 12 lines/s (daemon limit 20/s).
 
 ## Remote keys in the spike
 
@@ -96,6 +110,22 @@ Source: https://developer.samsung.com/tv/develop/api-references/tizen-web-device
 A TV needs an author certificate plus a **Samsung distributor certificate that contains the TV's
 DUID**. A plain Tizen certificate is rejected on TVs.
 
+### Apps2Samsung route (Windows, no Tizen Studio)
+
+Apps2Samsung is a third-party Windows tool that installs a `.wgt` on a TV in Developer Mode,
+signing it with a Samsung certificate profile it creates for that TV (Samsung account login,
+TV DUID). Its certificates live under `%APPDATA%\Apps2Samsung\Certificate\`; keep them
+out of the repo.
+
+1. Developer Mode on the TV with the PC's IP as Host PC IP (section 1).
+2. `python client/tizen/package_spike.py --pc-host <PC_IP>` writes the unsigned
+   `client/tizen/GhostpadSpike.wgt` (git-ignored). Add `--token` if the daemon uses one.
+3. Start the daemon on the PC (`daemon\packaging\dist\ghostpad\ghostpad.exe` or
+   `python -m ghostpad` from `daemon/`) and allow inbound TCP 47800 from the TV
+   (`docs/windows-setup.md` section 5).
+4. Apps2Samsung: select the TV, choose the WGT file, install. The app appears under Apps as
+   "Ghostpad Spike".
+
 ### Tizen Studio route
 
 1. Connect the TV: Device Manager > Remote Device Manager > `+`, name, IP = TV IP, port 26101.
@@ -149,6 +179,7 @@ regenerate it with the TV connected.
 - Alternatively TV: Apps > (selected app) > the "Debug" flow of the TV's developer menu. UNVERIFIED which of these works on 2025 firmware.
 - All output also goes to the console with the prefix `[spike]`. In the console, `setPcHost('192.168.1.50')`
   enables the WebSocket test without rebuilding.
+- Without an inspector, read the daemon log (see "Results in the daemon log").
 
 ## 4. What to expect on screen
 
