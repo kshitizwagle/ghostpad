@@ -484,6 +484,48 @@ class StaticTests(ServerTestBase):
         w.close()
 
 
+class DisconnectLogTests(ServerTestBase):
+    async def test_owner_disconnect_logged_once(self):
+        with self.assertLogs("ghostpad.server", level="INFO") as cm:
+            a = await self.welcomed(name="a")
+            b = await self.welcomed(name="b")  # takes over: 'a' is released, not "disconnected"
+            await a.send_close()
+            await b.send_close()
+            await self.settle(0.1)
+        msgs = [r.getMessage() for r in cm.records]
+        self.assertIn("client 'b' disconnected", msgs)
+        self.assertNotIn("client 'a' disconnected", msgs)
+
+
+class ExceptionHandlerTests(unittest.TestCase):
+    def test_connection_resets_are_quiet_others_pass_through(self):
+        from unittest import mock
+        from ghostpad.server import _quiet_connection_resets
+        loop = mock.Mock()
+        for exc in (ConnectionResetError(10054, "reset"), ConnectionAbortedError()):
+            _quiet_connection_resets(loop, {"message": "teardown", "exception": exc})
+        loop.default_exception_handler.assert_not_called()
+        ctx = {"message": "boom", "exception": ValueError("x")}
+        _quiet_connection_resets(loop, ctx)
+        loop.default_exception_handler.assert_called_once_with(ctx)
+
+    def test_installed_on_start_unless_one_is_set(self):
+        async def check():
+            from ghostpad.server import _quiet_connection_resets
+            loop = asyncio.get_running_loop()
+            s = GhostpadServer(MockBackend(), host="127.0.0.1", port=0)
+            await s.start()
+            self.assertIs(loop.get_exception_handler(), _quiet_connection_resets)
+            await s.stop()
+            mine = lambda lp, ctx: None
+            loop.set_exception_handler(mine)
+            s = GhostpadServer(MockBackend(), host="127.0.0.1", port=0)
+            await s.start()
+            self.assertIs(loop.get_exception_handler(), mine)
+            await s.stop()
+        asyncio.run(check())
+
+
 class RumbleTests(ServerTestBase):
     """Backend force feedback -> RUMBLE (0x05) to the owning client."""
 

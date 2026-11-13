@@ -89,6 +89,14 @@ def autostart_command(exe: str, args: argparse.Namespace) -> str:
     return subprocess.list2cmdline([exe] + argv)
 
 
+def web_menu_label(status: dict | None) -> str:
+    """The web client takes the pads on connect (newest client wins), so say so."""
+    client = status.get("client") if status else None
+    if client:
+        return f"Open web test client (takes over from {client[:40]})"
+    return "Open web test client"
+
+
 def web_client_url(port: int, token: str | None) -> str:
     return f"http://localhost:{port}/" + (f"?token={quote(token, safe='')}" if token else "")
 
@@ -401,7 +409,7 @@ class TrayApp:
                 api.AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, line)
             api.AppendMenuW(menu, MF_SEPARATOR, 0, None)
             api.AppendMenuW(menu, MF_STRING, CMD_LOG, "Open log")
-            api.AppendMenuW(menu, MF_STRING | (0 if alive else MF_GRAYED), CMD_WEB, "Open web test client")
+            api.AppendMenuW(menu, MF_STRING | (0 if alive else MF_GRAYED), CMD_WEB, web_menu_label(status))
             if self.frozen:
                 checked = MF_CHECKED if autostart_get() else 0
                 api.AppendMenuW(menu, MF_STRING | checked, CMD_AUTOSTART, "Start with Windows")

@@ -63,6 +63,20 @@ class Client:
         self.rumble: list[tuple[int, int]] = [(0, 0)] * max_pads  # last RUMBLE sent per pad
 
 
+def _quiet_connection_resets(loop: asyncio.AbstractEventLoop, context: dict) -> None:
+    """Loop exception handler: a peer reset during transport teardown is not an error.
+
+    Windows proactor (CPython 3.12): when a browser tab drops a socket,
+    `_call_connection_lost` notifies the protocol first (the session ends and releases
+    normally) and then `sock.shutdown()` raises WinError 10054, logged by asyncio at
+    ERROR with a traceback. Everything else goes to the default handler.
+    """
+    if isinstance(context.get("exception"), (ConnectionResetError, ConnectionAbortedError)):
+        log.debug("connection reset during teardown: %s", context.get("message"))
+        return
+    loop.default_exception_handler(context)
+
+
 class GhostpadServer:
     def __init__(
         self,
@@ -103,6 +117,8 @@ class GhostpadServer:
         )
         self.port = self._server.sockets[0].getsockname()[1]
         self._loop = asyncio.get_running_loop()
+        if self._loop.get_exception_handler() is None:
+            self._loop.set_exception_handler(_quiet_connection_resets)
         self.backend.set_rumble_handler(self._rumble_from_backend)
         self._tasks.append(asyncio.create_task(self._watchdog_loop()))
         if self._stats_interval:
@@ -370,6 +386,8 @@ class GhostpadServer:
                 return
             await self._session(client)
         finally:
+            if client.active:  # owner leaving (a taken-over client was released already)
+                log.info("client %r disconnected", client.name)
             self._release(client)
             self._clients.discard(client)
 

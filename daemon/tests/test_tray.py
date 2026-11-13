@@ -56,6 +56,12 @@ class HelperTests(unittest.TestCase):
         self.assertIn('--bind 0.0.0.0 --backend auto --token "a b\\"c"', cmd)
         self.assertNotIn("--log-file", cmd)
 
+    def test_web_menu_label_warns_about_takeover(self):
+        self.assertEqual(tray.web_menu_label(None), "Open web test client")
+        self.assertEqual(tray.web_menu_label({"client": None}), "Open web test client")
+        self.assertEqual(tray.web_menu_label({"client": "tizen-spike"}),
+                         "Open web test client (takes over from tizen-spike)")
+
     def test_web_client_url(self):
         self.assertEqual(tray.web_client_url(47800, None), "http://localhost:47800/")
         self.assertEqual(tray.web_client_url(1, "a&b c"), "http://localhost:1/?token=a%26b%20c")

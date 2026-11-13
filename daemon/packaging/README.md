@@ -61,6 +61,11 @@ closing one does not stop it.
 Menu (left or right click): status lines, **Open log**, **Open web test client**
 (`http://localhost:<port>/`, with `?token=`), **Start with Windows**, **Quit**.
 
+The web test client takes the pads as soon as the page loads (newest client wins), and a
+taken-over TV app does not reconnect by itself (close 4001). While a client is connected the
+item reads "Open web test client (takes over from <name>)". Afterwards, restart the app on
+the TV.
+
 - Log: `%LOCALAPPDATA%\ghostpad\ghostpad.log`, rotated at 1 MB, 3 kept (`--log-file` to move
   it). Stray output of the windowed exe goes to `ghostpad-stderr.log` beside it.
 - **Quit**, Windows logoff/shutdown and Ctrl+C (console runs) stop the server normally:
@@ -78,8 +83,9 @@ Menu (left or right click): status lines, **Open log**, **Open web test client**
 Verified on Windows 11: icon added (grey with `vigem`, amber with `mock`), status snapshot
 with a client and pad, WM_CLOSE quit with the normal release and exit 0
 (`daemon/tests/test_tray.py`, and the same by hand against the built exe), and the TV client
-reconnecting to it with the `vigem` backend. Not verified by a person: the menu, colour
-changes on screen, a real logon start from the Run key, release at a real logoff.
+reconnecting to it with the `vigem` backend. Used by hand: **Open web test client** (opened
+the page, which took over) and **Start with Windows** (Run key written with the expected
+command line). Not verified: a real logon start from the Run key, release at a real logoff.
 
 ## Autostart
 
