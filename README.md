@@ -16,14 +16,14 @@ TV  ◀──────────────────────── 
 | Milestone | State |
 |---|---|
 | M0 Bootstrap (docs) | Done |
-| M1 Windows daemon | Written; tests pass on Linux and Windows 11 with the mock backend. **ViGEm backend untested with the driver** |
+| M1 Windows daemon | Done: tests pass on Linux and Windows 11; ViGEm backend verified through XInput (`bench/vigem_check.py`). A real controller in the browser and a real game not tried yet |
 | M2 Browser test client | Written; headless-tested only |
 | M3 Latency measurement | Tooling written; **no real-hardware numbers yet** |
 | M4 Tizen spike | Written; **never run on a TV** (go/no-go still open) |
 | M5 Tizen client | Not started |
-| M6 Polish | In progress: rumble done (untested with the driver); exe build and autostart verified on Windows 11 without the driver; Linux backend and multi-pad open |
+| M6 Polish | In progress: rumble, exe, autostart and four pads verified on Windows 11; Linux backend open |
 
-On Windows only the driver-free parts are verified so far (mock backend, exe, autostart). Expect rough edges.
+On Windows the daemon side is verified with ViGEmBus; the browser path with a real controller is not yet. Expect rough edges.
 
 ## Quick start (Windows 10/11)
 

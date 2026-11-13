@@ -1,9 +1,10 @@
 # Packaging (Windows exe and autostart)
 
-Verified on Windows 11 Pro, Python 3.12, PyInstaller 6.22, `vgamepad` 0.2.0, **without** the
+Verified on Windows 11 Pro, Python 3.12, PyInstaller 6.22, `vgamepad` 0.2.0. Without the
 ViGEmBus driver: builds, serves the bundled web client, runs the mock backend under load
-(`bench/bench.py`), reports the missing driver, and the autostart scripts install, start
-and uninstall. A real virtual pad from the exe is not verified (needs the driver, issue #3).
+(`bench/bench.py`), reports the missing driver. With ViGEmBus 1.17.333: the one-folder exe
+passes all 16 `bench/vigem_check.py --exe` checks, and under the autostart task (no-console
+build, default `auto` backend) a client's pad shows up in XInput and unplugs on close.
 
 | File | Purpose |
 |---|---|
@@ -56,7 +57,7 @@ The token is stored in plain text in the task definition. The firewall rule is s
 
 Stopping the task ends the process without the daemon's neutral-then-unplug release (a
 no-console process gets no Ctrl+C). Held inputs then depend on the driver unplugging the
-pads when the process exits: UNVERIFIED, `docs/windows-setup.md` check 18.
+pads when the process exits: measured 2.1-2.2 ms (`docs/windows-setup.md` check 18).
 
 `uninstall_autostart.ps1` also stops any process still running the task's exe after a short
 wait (the one-file child above). Not verified: an actual logon start.

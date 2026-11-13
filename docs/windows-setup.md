@@ -2,11 +2,11 @@
 
 First run of the daemon on Windows 10/11, with the verification checklist for issue #3.
 
-**Status: partly verified** on Windows 11 Pro, Python 3.12, PyInstaller 6.22, *without*
-the ViGEmBus driver: the daemon with the mock backend, all test suites, the missing-driver
-handling, `vgamepad` 0.2.0 install behaviour, the exe build and the autostart scripts.
-**Not verified:** anything that needs the driver (the issue #3 checklist below). Items
-marked UNVERIFIED are still from memory.
+**Status: daemon side verified** on Windows 11 Pro with ViGEmBus 1.17.333 (installed by
+`vgamepad` 0.2.0), Python 3.12, PyInstaller 6.22: every check in section 4 passes through
+XInput with `bench/vigem_check.py`, from source and from the packaged exe, plus the
+autostart task. **Not verified:** a real controller through the browser client, and a real
+game. Items marked UNVERIFIED are still from memory.
 
 ## 1. Prerequisites
 
@@ -54,7 +54,7 @@ to the status. `--backend vigem` exits with code 2 instead of falling back.
 
 Stop with Ctrl+C or Ctrl+Break: pads go neutral, are unplugged, and exit stats are logged
 (Ctrl+Break verified with the mock backend). Closing the console window or killing the
-process skips that; whether the driver then unplugs the pads is UNVERIFIED (check 18).
+process skips that; the driver then removes the pads within a few ms (check 18).
 
 Options: `--port`, `--bind` (use `127.0.0.1` for local-only), `--token SECRET`,
 `--backend vigem|mock|auto`, `--trace` (log every pad operation at DEBUG, useful for the checklist below). `--token` is recommended whenever the port is open to the LAN.
@@ -69,36 +69,49 @@ Options: `--port`, `--bind` (use `127.0.0.1` for local-only), `--token SECRET`,
 
 ## 4. Verification checklist (issue #3)
 
-Record pass/fail and notes. Use the `joy.cpl` Properties tab or a controller tester site
-in a **separate** browser window (not the ghostpad page, and do not use the same
-controller read by two pages if it confuses you).
+Two ways to run it:
 
-| # | Check | Expected | Result |
-|---|---|---|---|
-| 1 | A, B, X, Y | Each lights its own button, no swaps | |
-| 2 | LB, RB | Shoulder buttons 5 and 6 (as shown by the tester) | |
-| 3 | Back, Start | Back/View and Start/Menu | |
-| 4 | LS click, RS click | Stick-click buttons | |
-| 5 | D-pad up/down/left/right | POV hat directions, each correct | |
-| 6 | Guide (if your pad sends it) | Guide/Xbox button; may be swallowed by Windows | |
-| 7 | LT, RT | Analog 0 to full travel, independent of each other, no button bit | |
-| 8 | Left stick | Up = up, down = down, left = left, right = right; full range reaches the extremes | |
-| 9 | Right stick | Same as left stick (Y inversion correct on both) | |
-| 10 | Neutral | Release everything: all axes return to centre, triggers to 0 | |
-| 11 | Unplug on client disconnect | Close the ghostpad tab: the Xbox 360 pad disappears from `joy.cpl` (and Device Manager) within a moment | |
-| 12 | Reconnect | Reopen the tab, press a button: pad reappears and works | |
-| 13 | Watchdog, hidden tab | Hold a button or push a stick, switch to another tab/minimise the window so the page stops polling (rAF is throttled in hidden tabs): the held input releases to neutral within about 250 ms and the pad stays plugged in | |
-| 14 | Watchdog resumes | Bring the tab back, press a button: input resumes without reconnecting | |
-| 15 | Takeover | Open a second tab/client: the first is closed with code 4001, second drives the pad | |
-| 16 | Stuck button after kill | Hold a button, end the browser process in Task Manager: input releases (watchdog or close) | |
-| 17 | Rumble | In a game (or tester) that vibrates the pad: the controller rumbles, the ghostpad page shows L/S values, `/stats` `rumble_sent` rises, and vibration stops when the game stops it. Run with `--trace` to see `rumble large= small=` lines | |
-| 18 | Daemon killed | Hold a button, end `python`/`ghostpad.exe` in Task Manager: the virtual pad disappears from `joy.cpl` (driver cleanup; the daemon cannot release on a hard kill) | |
-| 19 | Daemon Ctrl+Break | Hold a button, press Ctrl+Break in the daemon console: pad neutral, then unplugged; page shows disconnected | |
+- **Automated, daemon side:** `python bench/vigem_check.py` (or `--exe
+  daemon\packaging\dist\ghostpad\ghostpad.exe`). It starts the daemon with the vigem
+  backend, drives it with a protocol client and reads the pads back with XInput (the API
+  games use), acting as the game for rumble. No controller or browser involved. Results
+  below: 2026-11-13, 3 runs (2 from source, 1 exe). All 16 checks passed in the last
+  two; in the first, `client_killed` failed from a harness bug (the reset was not flushed
+  before measuring), fixed since.
+- **By hand, with a controller:** use the `joy.cpl` Properties tab or a controller tester
+  site in a **separate** browser window (not the ghostpad page). This also covers the
+  browser's Gamepad API mapping and `vibrationActuator`, which the script does not.
+
+| # | Check | Expected | `vigem_check` | Controller + browser |
+|---|---|---|---|---|
+| 1 | A, B, X, Y | Each lights its own button, no swaps | pass | |
+| 2 | LB, RB | Shoulder buttons 5 and 6 (as shown by the tester) | pass | |
+| 3 | Back, Start | Back/View and Start/Menu | pass | |
+| 4 | LS click, RS click | Stick-click buttons | pass | |
+| 5 | D-pad up/down/left/right | POV hat directions, each correct | pass | |
+| 6 | Guide (if your pad sends it) | Guide/Xbox button; may be swallowed by Windows | pass (read with XInputGetStateEx) | |
+| 7 | LT, RT | Analog 0 to full travel, independent of each other, no button bit | pass, 0-255 exact | |
+| 8 | Left stick | Up = up, down = down, left = left, right = right; full range reaches the extremes | pass, exact incl. extremes | |
+| 9 | Right stick | Same as left stick (Y inversion correct on both) | pass | |
+| 10 | Neutral | Release everything: all axes return to centre, triggers to 0 | pass | |
+| 11 | Unplug on client disconnect | Close the ghostpad tab: the Xbox 360 pad disappears from `joy.cpl` (and Device Manager) within a moment | pass, 1.9-3.2 ms after close | |
+| 12 | Reconnect | Reopen the tab, press a button: pad reappears and works | pass | |
+| 13 | Watchdog, hidden tab | Hold a button or push a stick, switch to another tab/minimise the window so the page stops polling (rAF is throttled in hidden tabs): the held input releases to neutral within about 250 ms and the pad stays plugged in | pass, release max 215.3 ms (10 trials) | |
+| 14 | Watchdog resumes | Bring the tab back, press a button: input resumes without reconnecting | pass | |
+| 15 | Takeover | Open a second tab/client: the first is closed with code 4001, second drives the pad | pass | |
+| 16 | Stuck button after kill | Hold a button, end the browser process in Task Manager: input releases (watchdog or close) | pass, connection reset: unplug 0.9 ms | |
+| 17 | Rumble | In a game (or tester) that vibrates the pad: the controller rumbles, the ghostpad page shows L/S values, `/stats` `rumble_sent` rises, and vibration stops when the game stops it. Run with `--trace` to see `rumble large= small=` lines | pass: XInputSetState(L, R) gives RUMBLE large = L >> 8, small = R >> 8 in 0.1-0.24 ms | |
+| 18 | Daemon killed | Hold a button, end `python`/`ghostpad.exe` in Task Manager: the virtual pad disappears from `joy.cpl` (driver cleanup; the daemon cannot release on a hard kill) | pass, driver removes the pad 2.1-2.2 ms after the kill | |
+| 19 | Daemon Ctrl+Break | Hold a button, press Ctrl+Break in the daemon console: pad neutral, then unplugged; page shows disconnected | pass, unplug 1.1-1.3 ms, exit 0 | |
 
 Note for 13: the watchdog is fed only by STATE and PAD_GONE frames; PINGs and WebSocket
-ping/pong do not count, so a stalled poll loop cannot be masked. Measured with the mock
-backend on this Windows 11 machine (100 trials, last STATE to neutral): median 203.0 ms,
-max 215.5 ms.
+ping/pong do not count, so a stalled poll loop cannot be masked. Measured on this Windows 11
+machine, last STATE to neutral: mock backend 100 trials median 203.0 ms, max 215.5 ms;
+vigem via XInput 3 x 10 trials, max 215.3 ms.
+
+`vigem_check` also covers four pads at once (pads 0-3 map to XInput slots 0-3, each reads
+its own state) and STATE-sent to XInput-visible latency on loopback: median 0.100-0.225 ms,
+p99 0.189-0.528 ms (3 runs, 200-500 samples).
 
 Latency numbers are a separate exercise: `docs/latency-testing.md`.
 
@@ -168,7 +181,8 @@ start "" /min pythonw -m ghostpad --token SECRET
 
 ## Not verified
 
-- Anything with the ViGEmBus driver installed: the checklist in section 4.
+- The "Controller + browser" column of section 4, and a real game.
+- Autostart at an actual logon (verified with `Start-ScheduledTask`, same task).
 - Whether the newest upstream ViGEmBus works with `vgamepad`'s bundled ViGEmClient
   (`vgamepad` only warns on a version mismatch).
 - The Startup-folder option (7B) and `pythonw`.

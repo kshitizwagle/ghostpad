@@ -36,7 +36,7 @@ Input only. Video and audio never touch the daemon.
 | `client/web/` | Browser test client: static, no build step, served by the daemon; JS tests in `client/web/tests/` |
 | `client/tizen/` | Tizen TV app |
 | `client/tizen/spike/` | Tizen feasibility spike (M4): minimal app, see `docs/tizen-spike.md` |
-| `bench/` | Latency scripts (synthetic client, analysis) and their tests |
+| `bench/` | Latency scripts (synthetic client, analysis) and their tests; `vigem_check.py` (Windows end-to-end check through XInput) |
 | `docs/` | Procedures, e.g. `latency-testing.md` |
 
 ## Daemon
@@ -134,7 +134,8 @@ Field notes:
 ### Rumble
 
 - RUMBLE carries the motor levels a game set on a virtual pad: `large` = low-frequency
-  (left) motor, `small` = high-frequency (right), 0-255.
+  (left) motor, `small` = high-frequency (right), 0-255. Verified with ViGEmBus: a game's
+  `XInputSetState(L, R)` (0-65535) arrives as `large = L >> 8`, `small = R >> 8`.
 - Sent to the owning client only, for pads it has plugged, **on change only** per pad.
   Backend callbacks arrive on a driver thread and are moved onto the event loop
   (`call_soon_threadsafe`); the send does not wait for the socket buffer.
@@ -242,7 +243,8 @@ Controllers without `mapping === "standard"` are ignored by the v1 clients.
 - **Close:** on connection close, pads go neutral, then are unplugged.
 - **Shutdown:** the daemon neutralises and unplugs all pads on exit (SIGINT, SIGTERM; on
   Windows Ctrl+C and Ctrl+Break). A hard kill (Task Manager, `Stop-ScheduledTask`) skips
-  this; pads are then left to the driver's cleanup when the process handle closes.
+  this; pads are then left to the driver's cleanup when the process handle closes. Measured
+  with ViGEmBus 1.17.333: the pad left XInput 2.1-2.2 ms after `TerminateProcess` (3 runs).
 - Watchdog tick is 10 ms nominal, so worst-case release is about 220 ms. On Windows the
   event loop's timers run at the ~15.6 ms system tick; measured there (Windows 11, Python
   3.12, mock backend, 100 trials, last STATE to neutral): median 203.0 ms, max 215.5 ms.
@@ -279,7 +281,7 @@ Sources of delay:
 | rAF polling quantisation | 0 to 16.7 ms at 60 Hz | Yes | **Biggest known contributor.** Mitigation idea: poll via `setInterval` or a `MessageChannel` loop faster than rAF. To be tested, not assumed |
 | Network RTT / 2 | < 1 ms wired | Yes | Wi-Fi on either end adds jitter |
 | Daemon processing | Sub-millisecond | Yes | Decode, seq check, backend call |
-| ViGEm update | ~1 ms | Partly | Driver report submission |
+| ViGEm update | Sub-millisecond | Partly | Driver report submission. Measured on loopback, STATE sent to XInput-visible (WebSocket + daemon + ViGEm + XInput read): median 0.100-0.225 ms, p99 0.189-0.528 ms, 3 runs of 200-500 samples (`bench/vigem_check.py`) |
 | Game's own polling | 0 to 1 frame | No | Same with a directly attached pad |
 
 ## Measurement design
@@ -331,6 +333,10 @@ Built in M3. Procedures and how to read the numbers: `docs/latency-testing.md`.
   and cut the change-to-send delay from median 7.7-8.9 ms / p99 16.1 ms (raf) to median
   1.9-2.0 ms / p99 4.0 ms (2 runs each, 300 changes per run). This measures the scheduler only; whether Chrome refreshes the real
   gamepad state that often is unmeasured (needs hardware). Default stays `raf` until then.
+- **`bench/vigem_check.py` (Windows, needs ViGEmBus).** Starts the daemon with the vigem
+  backend, drives it with a protocol client and reads the pads back with XInput: mapping,
+  watchdog, unplug paths, rumble (as the game, via `XInputSetState`), four pads, Ctrl+Break,
+  hard kill, and STATE-to-XInput latency. `--exe` runs the packaged build instead.
 - **Button-to-photon.** Film the controller and the screen with a phone at 240 fps
   slow-motion; count frames from button press to on-screen change. Compare controller on
   PC, ghostpad via browser on PC, ghostpad via the TV app, over 20+ presses each. Procedure
@@ -345,5 +351,5 @@ Built in M3. Procedures and how to read the numbers: `docs/latency-testing.md`.
 | Game Mode and audio | Unknown whether low-latency Game Mode and HDMI audio survive when HDMI is shown inside the app window |
 | Background pause | Tizen pauses JS in background apps, so the app must stay foreground; this is why HDMI is shown inside the app |
 | Secure context | Gamepad API in desktop Chrome needs a secure context. `localhost` works, plain `http://LAN-IP` does not. Affects the browser test client from another machine, not packaged Tizen apps |
-| ViGEmBus | Unmaintained, but still works |
+| ViGEmBus | Unmaintained, but works: 1.17.333 (bundled with `vgamepad` 0.2.0) verified on Windows 11 |
 | rAF quantisation | May dominate the latency budget; see mitigation above |

@@ -36,6 +36,7 @@ docs/              procedures and findings
 ```
 cd daemon && python3 -m unittest discover -s tests -v   # daemon tests
 python3 -m unittest discover -s bench                    # bench tests (from repo root)
+python bench/vigem_check.py                              # Windows + ViGEmBus only: end-to-end via XInput
 node --test "client/web/tests/*.test.mjs"                # web client tests (from repo root)
 python -m ghostpad --backend mock --verbose              # run locally (from daemon/)
 python -m ghostpad --backend mock --trace                # also log every pad op at DEBUG
