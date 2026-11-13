@@ -8,14 +8,14 @@ to the TV; video and audio stay on the cable. Why: avoid streaming latency and c
 issues while keeping the couch controller. See `PRODUCT.md` for scope and
 `DESIGN.md` for architecture and protocol.
 
-Status: **M1-M3 code complete (ViGEm backend untested on Windows; M3 hardware measurements pending); M4 written, untested on TV; M6 in progress; M5 not started.** See "Needs hardware".
+Status: **M1-M3 code complete; all test suites pass on Linux and Windows 11 (mock backend). ViGEm backend untested with the driver; M3 hardware measurements pending. M4 written, untested on TV. M6 in progress (rumble done; exe and autostart verified on Windows without the driver). M5 not started.** See "Needs hardware".
 
 ## Milestones
 
 | ID | Name | Outcome | Status |
 |---|---|---|---|
 | M0 | Bootstrap | Repo docs (PRODUCT, DESIGN, PLAN, CLAUDE) | Done |
-| M1 | Windows daemon | WS server, protocol decode, PadBackend (vigem + mock), watchdog, CLI, tests without Windows | Written; ViGEm backend untested on Windows |
+| M1 | Windows daemon | WS server, protocol decode, PadBackend (vigem + mock), watchdog, CLI, tests without Windows | Written; tests pass on Windows; ViGEm backend untested with the driver |
 | M2 | Browser test client | Static page: Gamepad API to STATE, connection status, live pad view | Done |
 | M3 | Latency measurement | PING/PONG, HUD stats, daemon histograms, bench script, button-to-photon doc | Tooling done; hardware measurements pending |
 | M4 | Tizen spike (go/no-go) | Sideloadable app showing HDMI via tvwindow with gamepad overlay; feasibility verdict | Written; untested on TV |
@@ -27,12 +27,12 @@ no-go, M5 is replanned before any further Tizen work.
 
 ## M0 — Bootstrap
 
-- [ ] `PRODUCT.md` merged
-- [ ] `.gitignore` covers Python, Tizen signing material, logs
-- [ ] `DESIGN.md` documents architecture, protocol v1, latency budget
-- [ ] `PLAN.md` (this file)
-- [ ] `CLAUDE.md` for AI agents
-- [ ] `README.md` stub pointing at the docs
+- [x] `PRODUCT.md` merged
+- [x] `.gitignore` covers Python, Tizen signing material, logs
+- [x] `DESIGN.md` documents architecture, protocol v1, latency budget
+- [x] `PLAN.md` (this file)
+- [x] `CLAUDE.md` for AI agents
+- [x] `README.md` stub pointing at the docs
 
 Exit criteria: all four docs are on `main` and consistent with each other.
 
@@ -105,12 +105,12 @@ unplug-the-cable test releases all inputs within 250 ms.
 
 ## M6 — Polish
 
-- [ ] RUMBLE: vigem notification callback to message 0x05 (daemon side not done); client uses `vibrationActuator` (done: `client/web/rumble.js`)
-- [x] PyInstaller single exe for Windows (`daemon/packaging/build_exe.py`; untested on Windows)
-- [x] Autostart on Windows login (`daemon/packaging/install_autostart.ps1`, `uninstall_autostart.ps1`; untested on Windows)
+- [x] RUMBLE: vigem notification callback to message 0x05 (daemon, tested with the mock backend; with the driver: `docs/windows-setup.md` check 17); client uses `vibrationActuator` (`client/web/rumble.js`). Tizen vibration path is M5
+- [x] PyInstaller exe for Windows (`daemon/packaging/build_exe.py`; one folder by default; verified on Windows 11 without the driver)
+- [x] Autostart on Windows login (`daemon/packaging/install_autostart.ps1`, `uninstall_autostart.ps1`; install, start and uninstall verified on Windows 11; a real logon start not yet)
 - [ ] Linux `uinput` backend
 - [ ] Multi-pad (up to 4) verified end to end
-- [x] `README.md` install guide (ViGEmBus, daemon, TV sideload) and `docs/windows-setup.md` (untested on Windows)
+- [x] `README.md` install guide (ViGEmBus, daemon, TV sideload) and `docs/windows-setup.md` (partly verified on Windows; driver steps not)
 
 Exit criteria: a clean-machine install following only the README works end to end.
 
@@ -118,7 +118,7 @@ Exit criteria: a clean-machine install following only the README works end to en
 
 | Item | Where |
 |---|---|
-| Windows ViGEm verification: a real game sees the virtual X360 pad | issue #3, `docs/windows-setup.md` |
+| Windows ViGEm verification: a real game sees the virtual X360 pad, rumble, release on daemon kill | issue #3, `docs/windows-setup.md` checks 1-19 |
 | Tizen spike go/no-go on the TV (tvwindow, input with HDMI shown, audio, Game Mode) | issues #9, #10, `docs/tizen-spike.md` |
 | Real-controller polling comparison (rAF vs fast timer) | issue #16 |
 | Button-to-photon measurement | `docs/latency-testing.md` section c |

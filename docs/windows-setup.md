@@ -2,9 +2,11 @@
 
 First run of the daemon on Windows 10/11, with the verification checklist for issue #3.
 
-**Status: untested.** Written without access to a Windows machine. Items marked
-UNVERIFIED come from memory or could not be checked online while writing; confirm them
-and fix this doc.
+**Status: partly verified** on Windows 11 Pro, Python 3.12, PyInstaller 6.22, *without*
+the ViGEmBus driver: the daemon with the mock backend, all test suites, the missing-driver
+handling, `vgamepad` 0.2.0 install behaviour, the exe build and the autostart scripts.
+**Not verified:** anything that needs the driver (the issue #3 checklist below). Items
+marked UNVERIFIED are still from memory.
 
 ## 1. Prerequisites
 
@@ -25,9 +27,12 @@ and fix this doc.
   **UNVERIFIED which is the recommended installer today**; prefer the newest release
   published on the upstream releases page.
 - Alternative: Chocolatey package `vigembus` (<https://community.chocolatey.org/packages/vigembus>).
-- Recent `vgamepad` releases reportedly ship the ViGEmBus installer and offer to run it
-  at install time (UAC prompt). **UNVERIFIED**; if `pip install vgamepad` does not
-  install the driver, install ViGEmBus manually first.
+- `pip install vgamepad` installs the driver itself (read from the `vgamepad` 0.2.0 sdist):
+  it is sdist-only, and its `setup.py` runs `msiexec /i ViGEmBusSetup_x64.msi` (bundled
+  ViGEmBus **1.17.333**, interactive, UAC) unless "Nefarius Virtual Gamepad Emulation Bus
+  Driver" is already in the Uninstall registry. A different installed version only gives a
+  warning. To skip the bundled installer (e.g. you installed a newer release first), set
+  `VGAMEPAD_SKIP_VIGEMBUS_INSTALL=true` before `pip install`.
 - Reboot if the installer asks. Device Manager should then list "Nefarius Virtual Gamepad
   Emulation Bus" under System devices.
 
@@ -42,7 +47,14 @@ python -m ghostpad --verbose
 ```
 
 Expect log lines about the server listening on `0.0.0.0:47800` and the `vigem` backend.
-If it logs "falling back to the mock backend", `vgamepad` is not importable.
+If it logs "falling back to the mock backend", the warning says why: `vgamepad` is not
+installed, or it cannot reach the driver (`VIGEM_ERROR_BUS_NOT_FOUND`; `vgamepad` connects
+to the bus when imported, so this shows at startup). The web client then shows `mock` next
+to the status. `--backend vigem` exits with code 2 instead of falling back.
+
+Stop with Ctrl+C or Ctrl+Break: pads go neutral, are unplugged, and exit stats are logged
+(Ctrl+Break verified with the mock backend). Closing the console window or killing the
+process skips that; whether the driver then unplugs the pads is UNVERIFIED (check 18).
 
 Options: `--port`, `--bind` (use `127.0.0.1` for local-only), `--token SECRET`,
 `--backend vigem|mock|auto`, `--trace` (log every pad operation at DEBUG, useful for the checklist below). `--token` is recommended whenever the port is open to the LAN.
@@ -79,9 +91,14 @@ controller read by two pages if it confuses you).
 | 14 | Watchdog resumes | Bring the tab back, press a button: input resumes without reconnecting | |
 | 15 | Takeover | Open a second tab/client: the first is closed with code 4001, second drives the pad | |
 | 16 | Stuck button after kill | Hold a button, end the browser process in Task Manager: input releases (watchdog or close) | |
+| 17 | Rumble | In a game (or tester) that vibrates the pad: the controller rumbles, the ghostpad page shows L/S values, `/stats` `rumble_sent` rises, and vibration stops when the game stops it. Run with `--trace` to see `rumble large= small=` lines | |
+| 18 | Daemon killed | Hold a button, end `python`/`ghostpad.exe` in Task Manager: the virtual pad disappears from `joy.cpl` (driver cleanup; the daemon cannot release on a hard kill) | |
+| 19 | Daemon Ctrl+Break | Hold a button, press Ctrl+Break in the daemon console: pad neutral, then unplugged; page shows disconnected | |
 
 Note for 13: the watchdog is fed only by STATE and PAD_GONE frames; PINGs and WebSocket
-ping/pong do not count, so a stalled poll loop cannot be masked.
+ping/pong do not count, so a stalled poll loop cannot be masked. Measured with the mock
+backend on this Windows 11 machine (100 trials, last STATE to neutral): median 203.0 ms,
+max 215.5 ms.
 
 Latency numbers are a separate exercise: `docs/latency-testing.md`.
 
@@ -137,8 +154,8 @@ start "" /min pythonw -m ghostpad --token SECRET
 
 | Symptom | Likely cause and fix |
 |---|---|
-| `backend unavailable` / "falling back to the mock backend" | `vgamepad` not installed in the Python you run: `python -m pip install vgamepad` |
-| Error mentioning `VIGEM_ERROR_BUS_NOT_FOUND` or a bus/driver error when the first pad is created | ViGEmBus not installed or service stopped. Install it, reboot, check Device Manager |
+| "vgamepad is not installed" (warning with `auto`, exit 2 with `--backend vigem`) | Not installed in the Python you run: `python -m pip install vgamepad` |
+| "cannot connect to the ViGEmBus driver (Error: VIGEM_ERROR_BUS_NOT_FOUND)" at startup | ViGEmBus not installed or service stopped. Install it, reboot, check Device Manager |
 | `cannot start server: [Errno 10048]` (address already in use) | Another process on 47800: a second daemon, or something else. `netstat -ano \| findstr 47800`, then `taskkill /PID <pid> /F`, or pick `--port 47801` |
 | Works on `localhost`, not from the TV or LAN | Firewall rule missing, network profile is Public, wrong IP, or `--bind 127.0.0.1` |
 | Page loads from LAN IP but pad never reacts | Insecure context: Gamepad API hidden. Use `localhost` on the PC |
@@ -151,5 +168,7 @@ start "" /min pythonw -m ghostpad --token SECRET
 
 ## Not verified
 
-- Which ViGEmBus installer is recommended today, and whether `vgamepad` bundles it.
-- Everything in this file on real Windows hardware.
+- Anything with the ViGEmBus driver installed: the checklist in section 4.
+- Whether the newest upstream ViGEmBus works with `vgamepad`'s bundled ViGEmClient
+  (`vgamepad` only warns on a version mismatch).
+- The Startup-folder option (7B) and `pythonw`.

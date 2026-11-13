@@ -15,21 +15,21 @@ TV  ◀──────────────────────── 
 
 | Milestone | State |
 |---|---|
-| M0 Bootstrap (docs) | Written |
-| M1 Windows daemon | Written; unit-tested on Linux with the mock backend. **ViGEm backend untested on hardware** |
+| M0 Bootstrap (docs) | Done |
+| M1 Windows daemon | Written; tests pass on Linux and Windows 11 with the mock backend. **ViGEm backend untested with the driver** |
 | M2 Browser test client | Written; headless-tested only |
 | M3 Latency measurement | Tooling written; **no real-hardware numbers yet** |
 | M4 Tizen spike | Written; **never run on a TV** (go/no-go still open) |
 | M5 Tizen client | Not started |
-| M6 Polish | Not started (packaging scripts in `daemon/packaging/` are untested on Windows) |
+| M6 Polish | In progress: rumble done (untested with the driver); exe build and autostart verified on Windows 11 without the driver; Linux backend and multi-pad open |
 
-Nothing here has been verified on Windows yet. Expect rough edges.
+On Windows only the driver-free parts are verified so far (mock backend, exe, autostart). Expect rough edges.
 
 ## Quick start (Windows 10/11)
 
 1. Install Python 3.11+ and the ViGEmBus driver (project is archived but still works;
    see `docs/windows-setup.md` for where to get it).
-2. `pip install vgamepad`
+2. `pip install vgamepad` (on Windows this also offers to install ViGEmBus 1.17.333 if no ViGEmBus is installed)
 3. From the repo root:
    ```
    cd daemon

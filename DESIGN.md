@@ -71,7 +71,7 @@ python -m ghostpad [--port 47800] [--bind 0.0.0.0] [--backend auto|vigem|mock]
 
 | Flag | Meaning |
 |---|---|
-| `--backend` | `auto` (default): `vigem` on Windows (falls back to `mock` with a warning if `vgamepad` is missing), `mock` elsewhere. `vigem` / `mock` force one |
+| `--backend` | `auto` (default): `vigem` on Windows, `mock` elsewhere. On Windows `auto` falls back to `mock` with a warning naming the cause if `vgamepad` is missing or cannot reach ViGEmBus. `vigem` / `mock` force one; `vigem` exits with code 2 when unavailable |
 | `--web-root` | Directory served for static files; default `client/web/` |
 | `--token` | See Security |
 | `--verbose` | DEBUG logging and a one-line stats summary every 30 s |
@@ -88,12 +88,14 @@ class PadBackend(Protocol):
     def neutral(self, pad: int) -> None: ...    # release everything
     def disconnect(self, pad: int) -> None: ... # unplug
     def close(self) -> None: ...
+    # h(pad, large, small) on force feedback from the game; may be called from any thread
+    def set_rumble_handler(self, h: Callable[[int, int, int], None] | None) -> None: ...
 ```
 
 | Backend | Platform | Notes |
 |---|---|---|
-| `vigem` | Windows | `vgamepad.VX360Gamepad`; needs ViGEmBus; imported lazily |
-| `mock` | Any | Records every call and the last state per pad; used by tests and non-Windows runs |
+| `vigem` | Windows | `vgamepad.VX360Gamepad`; needs ViGEmBus; imported lazily. `vgamepad` 0.2.0 connects to the bus at import, so a missing driver raises `RuntimeError` there; mapped to `BackendUnavailable`. Rumble via `register_notification` (callback on a ViGEmClient thread). Unplug happens in `VX360Gamepad.__del__`, so the callback must not reference the gamepad (a cycle would defer unplug to the GC) |
+| `mock` | Any | Records every call and the last state per pad; used by tests and non-Windows runs. `emit_rumble()` test hook |
 | `uinput` | Linux | Later (M6) |
 
 `PadState` = `buttons: int, lt: int, rt: int, lx: int, ly: int, rx: int, ry: int`.
@@ -113,7 +115,7 @@ A pad is plugged in lazily on its first STATE.
 | `0x02` | PING | C→S | 13 | `type u8, id u32, t_client f64` |
 | `0x03` | PONG | S→C | 17 | `type u8, id u32, t_client f64, proc_us u32` |
 | `0x04` | PAD_GONE | C→S | 2 | `type u8, pad u8` |
-| `0x05` | RUMBLE | S→C | 4 | `type u8, pad u8, large u8, small u8` (later milestone) |
+| `0x05` | RUMBLE | S→C | 4 | `type u8, pad u8, large u8, small u8` |
 
 Field notes:
 
@@ -128,6 +130,22 @@ Field notes:
 - PONG `proc_us`: server time between receiving the PING and sending the PONG, in
   microseconds. The client subtracts it from RTT.
 - Malformed or unknown-type binary frames are dropped and counted, never fatal.
+
+### Rumble
+
+- RUMBLE carries the motor levels a game set on a virtual pad: `large` = low-frequency
+  (left) motor, `small` = high-frequency (right), 0-255.
+- Sent to the owning client only, for pads it has plugged, **on change only** per pad.
+  Backend callbacks arrive on a driver thread and are moved onto the event loop
+  (`call_soon_threadsafe`); the send does not wait for the socket buffer.
+- The server sends 0/0 for a pad whose last RUMBLE was non-zero when the watchdog
+  neutralises it, on PAD_GONE, and on release (close, takeover: before the 4001 close
+  frame, best effort). While the watchdog holds a client's pads neutral, RUMBLE is not
+  sent; changes after its next STATE are.
+- The client plays a `dual-rumble` effect and re-issues it every 150 ms (200 ms effect)
+  while the last levels are non-zero; it stops on 0/0 and when the connection drops
+  (`client/web/rumble.js`).
+- Counted in `/stats` as `rumble_sent`. Same wire format as before, so the version stays 1.
 
 ### JSON control messages (text frames)
 
@@ -222,9 +240,13 @@ Controllers without `mapping === "standard"` are ignored by the v1 clients.
   A client with no plugged pads is never tripped. This closes the gap where a client with
   a stalled poll loop kept the link alive with PINGs while a button stayed held.
 - **Close:** on connection close, pads go neutral, then are unplugged.
-- **Shutdown:** the daemon neutralises and unplugs all pads on exit (SIGINT, SIGTERM).
-- Watchdog tick is 20 ms or finer, so worst-case release is about 220 ms. This meets
-  the 250 ms target in `PRODUCT.md`.
+- **Shutdown:** the daemon neutralises and unplugs all pads on exit (SIGINT, SIGTERM; on
+  Windows Ctrl+C and Ctrl+Break). A hard kill (Task Manager, `Stop-ScheduledTask`) skips
+  this; pads are then left to the driver's cleanup when the process handle closes.
+- Watchdog tick is 10 ms nominal, so worst-case release is about 220 ms. On Windows the
+  event loop's timers run at the ~15.6 ms system tick; measured there (Windows 11, Python
+  3.12, mock backend, 100 trials, last STATE to neutral): median 203.0 ms, max 215.5 ms.
+  This meets the 250 ms target in `PRODUCT.md`.
 - A half-open TCP link (cable pulled) is covered by the watchdog, not by TCP timeouts.
 
 ## Security
@@ -284,7 +306,7 @@ Built in M3. Procedures and how to read the numbers: `docs/latency-testing.md`.
     {"recv_apply":{"count":2501,"window":2501,"min_us":4.3,"median_us":10.4,"p95_us":18.2,
                    "p99_us":30.4,"max_us":304.2},
      "frames_received":3000,"stale_drops":0,"malformed_drops":0,"prehello_drops":0,
-     "watchdog_trips":0,"ping_count":499,"uptime_s":10.1}
+     "watchdog_trips":0,"ping_count":499,"rumble_sent":0,"uptime_s":10.1}
     ```
 
   - `recv_apply.count` is all-time STATE frames applied; `window` is the samples behind the
@@ -292,13 +314,17 @@ Built in M3. Procedures and how to read the numbers: `docs/latency-testing.md`.
   - `frames_received`: binary frames from an active (post-hello) client. `stale_drops`:
     seq filter. `malformed_drops`: undecodable, unknown-type or bad-pad frames.
     `prehello_drops`: binary before hello. `watchdog_trips`: 200 ms input-silence neutralisations.
+    `rumble_sent`: RUMBLE messages sent.
   - Logged as `exit stats: {json}` on shutdown, and as a one-line summary every 30 s with
     `--verbose`. Logs go to `logs/` (gitignored) when redirected there.
 - **`bench/bench.py` synthetic client** (stdlib only, own minimal WebSocket client).
   STATE at `--rate` with changing values plus PINGs; prints RTT / network RTT / jitter / loss,
   the generator's send-interval accuracy and the daemon `/stats`; `--json` for machines;
   `--spawn` starts a local mock daemon for loopback runs. Loopback excludes Bluetooth,
-  polling quantisation, real LAN/Wi-Fi and display lag.
+  polling quantisation, real LAN/Wi-Fi and display lag. On Windows it uses the selector
+  event loop and a 1 ms timer resolution (`timeBeginPeriod`): with the default proactor
+  loop and an open socket, 4 ms sends came out in bursts (send interval p95 ~30 ms); with
+  both, median 4.0 ms, p95 5.0 ms.
 - **Polling experiment.** `client/web/schedulers.js` offers `raf` (default) and `fast`
   (`setInterval` 4 ms), selected with `?poll=raf|fast` or the HUD toggle. In headless
   Chrome with a fake `getGamepads()`, `fast` polled at a 4.0 ms median (p99 4.6-5.0 ms)
