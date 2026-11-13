@@ -1,0 +1,14 @@
+/* Transparent everywhere so tizen.tvwindow video (z-order BEHIND) shows through. */
+html, body { margin: 0; padding: 0; width: 1920px; height: 1080px; overflow: hidden;
+  background: transparent; color: #fff; font: 22px/1.25 monospace; }
+.hidden { display: none; }
+#overlay { position: absolute; left: 40px; top: 30px; width: 1840px; height: 1020px;
+  background: rgba(0, 0, 0, 0.78); padding: 12px 20px; box-sizing: border-box; overflow: hidden; }
+#title { color: #ffd54a; margin-bottom: 8px; }
+#cols { display: flex; }
+.col { flex: 1; margin-right: 20px; min-width: 0; }
+h2 { margin: 8px 0 2px; font-size: 22px; color: #7fdcff; }
+pre { margin: 0; white-space: pre-wrap; word-break: break-all; font: 20px/1.2 monospace; }
+#mini { position: absolute; left: 20px; top: 20px; background: rgba(0, 0, 0, 0.7);
+  padding: 4px 10px; font-size: 24px; white-space: pre; }
+.ok { color: #7dff7d; } .bad { color: #ff7d7d; } .warn { color: #ffd54a; }
