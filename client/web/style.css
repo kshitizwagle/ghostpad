@@ -20,7 +20,7 @@ section { margin-top: 1.2rem; }
 .banner { margin-top: 1rem; padding: .8rem 1rem; border-radius: .5rem; border: 1px solid; font-size: 1rem; }
 .banner.error { border-color: var(--err); background: #2a1416; }
 .banner.warn { border-color: var(--warn); background: #2a2113; }
-#connect { display: flex; gap: .8rem; flex-wrap: wrap; align-items: end; }
+#connect form { display: flex; gap: .8rem; flex-wrap: wrap; align-items: end; }
 label { display: flex; flex-direction: column; gap: .25rem; color: var(--dim); font-size: .85rem; }
 input { font: inherit; font-size: 1.1rem; color: var(--fg); background: var(--panel);
   border: 2px solid var(--line); border-radius: .4rem; padding: .5rem .7rem; min-width: 16rem; }
@@ -77,3 +77,7 @@ select:focus-visible { outline: 3px solid #fff; outline-offset: 2px; }
 button.secondary { color: var(--fg); background: var(--panel); border-color: var(--line); }
 .json { width: 100%; margin-top: .6rem; font-family: ui-monospace, monospace; font-size: .75rem;
   color: var(--fg); background: var(--bg); border: 1px solid var(--line); }
+
+.rumble { margin-top: .7rem; display: flex; gap: .8rem; align-items: center; font-size: .8rem; color: var(--dim);
+  font-variant-numeric: tabular-nums; }
+.rumble.on { color: var(--accent); font-weight: 700; }

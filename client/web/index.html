@@ -21,10 +21,12 @@
 <div id="banner-resume" class="banner warn" hidden></div>
 
 <section id="connect">
-  <label>Host <input id="host" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="same host as this page"></label>
-  <label>Token <input id="token" type="text" spellcheck="false" autocomplete="off" placeholder="optional"></label>
-  <button id="connect-btn" type="button">Connect</button>
-  <button id="disconnect-btn" type="button">Disconnect</button>
+  <form id="connect-form" action="#" method="get" autocomplete="off">
+    <label>Host <input id="host" name="host" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="same host as this page"></label>
+    <label>Token <input id="token" name="token" type="password" spellcheck="false" autocomplete="off" placeholder="optional"></label>
+    <button id="connect-btn" type="submit">Connect</button>
+    <button id="disconnect-btn" type="button">Disconnect</button>
+  </form>
 </section>
 
 <section id="stats">
