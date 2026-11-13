@@ -147,10 +147,17 @@ context); see the README. The Tizen app is the intended remote client.
 
 ## 7. Autostart at login
 
-Option A, packaged exe plus Task Scheduler: see `daemon/packaging/README.md`
-(`build_exe.py`, `install_autostart.ps1`).
+Option A, tray app (recommended): build it with `python daemon\packaging\build_exe.py --tray`,
+start `daemon\packaging\dist\ghostpad-tray\ghostpad-tray.exe`, then tick **Start with
+Windows** in its tray menu (HKCU Run key, no admin). Quit from the same menu releases the
+pads. Details: `daemon/packaging/README.md`. Without building: `pythonw -m ghostpad --tray`
+from `daemon/` runs the same tray app (the menu's autostart item needs the exe).
 
-Option B, no exe, Startup folder: press `Win+R`, run `shell:startup`, and create
+Option B, packaged exe plus Task Scheduler: see `daemon/packaging/README.md`
+(`build_exe.py`, `install_autostart.ps1`). Use A or B, not both: the second start fails on
+the busy port.
+
+Option C, no exe, Startup folder: press `Win+R`, run `shell:startup`, and create
 `ghostpad.cmd` there:
 
 ```
@@ -159,8 +166,9 @@ cd /d C:\path\to\ghostpad\daemon
 start "" /min pythonw -m ghostpad --token SECRET
 ```
 
-`pythonw` has no console, so there is no log output and errors are invisible; use
-`python` with `start /min` while debugging. Startup-folder items run at user logon only.
+`pythonw` has no console, so there is no log output and errors are invisible; add `--tray`
+(log in `%LOCALAPPDATA%\ghostpad\ghostpad.log`, errors in a message box), or use `python`
+with `start /min` while debugging. Startup-folder items run at user logon only.
 (`pythonw` and Startup-folder behaviour: UNVERIFIED on this setup.)
 
 ## 8. Troubleshooting

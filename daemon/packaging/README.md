@@ -8,8 +8,8 @@ build, default `auto` backend) a client's pad shows up in XInput and unplugs on 
 
 | File | Purpose |
 |---|---|
-| `build_exe.py` | PyInstaller build wrapper; one folder by default, `--onefile` optional |
-| `ghostpad_exe.py` | Frozen entry point: injects `--web-root`, handles no-console builds |
+| `build_exe.py` | PyInstaller build wrapper; console or `--tray`; one folder by default, `--onefile` optional |
+| `ghostpad_exe.py` | Frozen entry point: injects `--web-root`; a windowed build always runs `--tray` |
 | `install_autostart.ps1` | Task Scheduler task at logon, hidden |
 | `uninstall_autostart.ps1` | Stops the daemon and removes that task |
 
@@ -21,9 +21,13 @@ build is driven by `build_exe.py` flags; PyInstaller's generated spec lands in `
 ```
 pip install pyinstaller vgamepad
 python daemon\packaging\build_exe.py              # dist\ghostpad\ghostpad.exe, console, shows logs
-python daemon\packaging\build_exe.py --noconsole  # no window; log in %LOCALAPPDATA%\ghostpad\ghostpad.log
+python daemon\packaging\build_exe.py --tray       # dist\ghostpad-tray\ghostpad-tray.exe, tray app (below)
 python daemon\packaging\build_exe.py --onefile    # dist\ghostpad.exe, single file (see below)
 ```
+
+Both builds can coexist (different folders) and both carry the controller icon, generated
+from `ghostpad/trayicon.py` at build time (`build\ghostpad.ico`). `--noconsole` is an alias
+of `--tray`.
 
 - **One folder is the default.** Ship the whole `dist\ghostpad\` folder (~20 MB). A one-file
   exe (~9 MB) is a bootloader that unpacks to `%TEMP%\_MEI*` and runs the daemon as a child
@@ -40,6 +44,42 @@ python daemon\packaging\build_exe.py --onefile    # dist\ghostpad.exe, single fi
   `--web-root` unless you give your own.
 - Without the driver: `--backend auto` logs the reason and falls back to mock;
   `--backend vigem` exits with code 2.
+
+## Tray app
+
+`ghostpad-tray.exe` (or `python -m ghostpad --tray`) runs the daemon with a notification-area
+icon and no console. Same flags as the console daemon; it is independent of any terminal, so
+closing one does not stop it.
+
+| Icon colour | Meaning |
+|---|---|
+| Grey | Listening, no client |
+| Green | A client owns the pads (tooltip: client name and players) |
+| Amber | `mock` backend: ViGEmBus unavailable, no virtual pad (tooltip says so) |
+| Red | Daemon stopped; a balloon names the log |
+
+Menu (left or right click): status lines, **Open log**, **Open web test client**
+(`http://localhost:<port>/`, with `?token=`), **Start with Windows**, **Quit**.
+
+- Log: `%LOCALAPPDATA%\ghostpad\ghostpad.log`, rotated at 1 MB, 3 kept (`--log-file` to move
+  it). Stray output of the windowed exe goes to `ghostpad-stderr.log` beside it.
+- **Quit**, Windows logoff/shutdown and Ctrl+C (console runs) stop the server normally:
+  pads neutral, then unplug. A kill still relies on the driver unplugging on exit.
+- **Start with Windows** writes `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\ghostpad`
+  (no admin) with this exe, `--tray` and the current `--port`, `--bind`, `--backend`,
+  `--token`, `--log-file`. The token is stored there in plain text. Exe builds only. Do not
+  combine with the Task Scheduler task below: the second start fails on the busy port.
+- Start-up errors (port in use, `--backend vigem` without the driver) show a message box.
+  A second tray app on the same port is refused.
+- If Explorer restarts, the icon is added again. At logon, adding is retried every second
+  until the taskbar exists.
+- Rebuilding while it runs fails (files in use): Quit first.
+
+Verified on Windows 11: icon added (grey with `vigem`, amber with `mock`), status snapshot
+with a client and pad, WM_CLOSE quit with the normal release and exit 0
+(`daemon/tests/test_tray.py`, and the same by hand against the built exe), and the TV client
+reconnecting to it with the `vigem` backend. Not verified by a person: the menu, colour
+changes on screen, a real logon start from the Run key, release at a real logoff.
 
 ## Autostart
 

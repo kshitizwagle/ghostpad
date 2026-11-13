@@ -3,11 +3,16 @@
 Run on Windows from anywhere:
 
     pip install pyinstaller vgamepad
-    python daemon/packaging/build_exe.py [--noconsole] [--onefile] [--name ghostpad]
+    python daemon/packaging/build_exe.py [--tray] [--onefile] [--name NAME]
 
 Output (gitignored, as are build/ and the generated .spec):
   default     daemon/packaging/dist/ghostpad/ghostpad.exe  (+ _internal/; ship the folder)
-  --onefile   daemon/packaging/dist/ghostpad.exe
+  --tray      daemon/packaging/dist/ghostpad-tray/ghostpad-tray.exe
+  --onefile   daemon/packaging/dist/<name>.exe
+
+Default is a console exe (log in the window). `--tray` builds the windowed tray app; it has
+its own default name, so both builds can sit side by side. Its log is in
+%LOCALAPPDATA%\\ghostpad. Both get the controller icon, generated from ghostpad/trayicon.py.
 
 Why one folder by default: a one-file exe is a bootloader that unpacks to %TEMP%\\_MEI* and
 runs the daemon as a child process. Killing the bootloader (Stop-ScheduledTask, Task Manager,
@@ -32,15 +37,16 @@ WEB_SRC = REPO / "client" / "web"
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--name", default="ghostpad")
-    ap.add_argument("--noconsole", action="store_true",
-                    help="windowed build (no console; log goes to %%LOCALAPPDATA%%\\ghostpad\\ghostpad.log)")
+    ap.add_argument("--name", default=None, help="default: ghostpad, or ghostpad-tray with --tray")
+    ap.add_argument("--tray", "--noconsole", dest="tray", action="store_true",
+                    help="windowed tray app (no console; log in %%LOCALAPPDATA%%\\ghostpad\\ghostpad.log)")
     ap.add_argument("--onefile", action="store_true",
                     help="single portable exe (see the module docstring for the stop/temp-dir caveat)")
     ap.add_argument("--clean", action="store_true", help="remove build/ and dist/ first")
     ap.add_argument("--allow-no-vgamepad", action="store_true",
                     help="build even if vgamepad is not installed (the exe then only has the mock backend)")
     args = ap.parse_args()
+    args.name = args.name or ("ghostpad-tray" if args.tray else "ghostpad")
 
     # Without vgamepad, PyInstaller only warns and the exe silently falls back to mock.
     if importlib.util.find_spec("vgamepad") is None and not args.allow_no_vgamepad:
@@ -63,6 +69,12 @@ def main() -> int:
     build.mkdir(parents=True, exist_ok=True)
     shutil.copytree(WEB_SRC, stage, ignore=shutil.ignore_patterns("tests", "node_modules", "*.test.*"))
 
+    sys.path.insert(0, str(DAEMON))
+    from ghostpad.trayicon import ico_bytes  # pure Python: same artwork as the tray icon
+
+    icon = build / "ghostpad.ico"
+    icon.write_bytes(ico_bytes("connected"))
+
     sep = ";" if sys.platform == "win32" else ":"  # --add-data separator
     cmd = [
         sys.executable, "-m", "PyInstaller",
@@ -82,8 +94,10 @@ def main() -> int:
         "--hidden-import", "vgamepad.win.virtual_gamepad",
         "--hidden-import", "ghostpad.backends.vigem",
         "--hidden-import", "ghostpad.backends.mock",
+        "--hidden-import", "ghostpad.tray",
+        "--icon", str(icon),
     ]
-    if args.noconsole:
+    if args.tray:
         cmd.append("--noconsole")
     cmd.append(str(HERE / "ghostpad_exe.py"))
 

@@ -39,6 +39,8 @@ On Windows the daemon side is verified with ViGEmBus; the browser path with a re
 5. Run `joy.cpl` (Game Controllers): an "Xbox 360 Controller" should appear and react.
 
 The pad is plugged in lazily on the first button press, so it will not show before that.
+`python -m ghostpad --tray` runs it with a notification-area icon instead of a console
+(status, log, quit; the packaged tray exe can also start with Windows).
 Full walkthrough, firewall rule, autostart and troubleshooting: `docs/windows-setup.md`.
 
 ## Trying it without Windows
@@ -92,7 +94,7 @@ port only on a Private network profile. Never expose it to the internet. Details
 | [`DESIGN.md`](DESIGN.md) | Architecture, protocol v1, latency budget |
 | [`PLAN.md`](PLAN.md) | Milestones and checklists |
 | [`docs/windows-setup.md`](docs/windows-setup.md) | First run on Windows, verification checklist |
-| [`daemon/packaging/`](daemon/packaging/) | PyInstaller exe and autostart scripts |
+| [`daemon/packaging/`](daemon/packaging/) | PyInstaller exe (console or tray app) and autostart scripts |
 
 ## License
 

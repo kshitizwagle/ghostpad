@@ -6,8 +6,10 @@ build (data lives under `sys._MEIPASS`: `_internal/` one-folder, `%TEMP%\\_MEI*`
 Rather than touch the package, this wrapper injects `--web-root <_MEIPASS>/client/web` unless
 the user passed one.
 
-With a `--noconsole` build `sys.stdout`/`sys.stderr` are None; they are redirected to a log
-file under %LOCALAPPDATA%\\ghostpad so logging does not break.
+A windowed build (`build_exe.py --tray`) has no console, so it always runs as the tray app
+(`--tray` is added), which logs to %LOCALAPPDATA%\\ghostpad\\ghostpad.log. `sys.stdout` and
+`sys.stderr` are None there; they go to ghostpad-stderr.log next to it (stray prints and
+tracebacks only), so the rotating log is never written through two handles.
 """
 
 from __future__ import annotations
@@ -18,16 +20,20 @@ import sys
 from pathlib import Path
 
 
+def _no_console() -> bool:
+    return sys.stdout is None or sys.stderr is None
+
+
 def _redirect_if_no_console() -> None:
-    if sys.stdout is not None and sys.stderr is not None:
+    if not _no_console():
         return
     base = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "ghostpad"
     base.mkdir(parents=True, exist_ok=True)
-    log = open(base / "ghostpad.log", "a", encoding="utf-8", buffering=1)
+    out = open(base / "ghostpad-stderr.log", "a", encoding="utf-8", buffering=1)
     if sys.stdout is None:
-        sys.stdout = log
+        sys.stdout = out
     if sys.stderr is None:
-        sys.stderr = log
+        sys.stderr = out
 
 
 def _inject_web_root() -> None:
@@ -41,8 +47,11 @@ def _inject_web_root() -> None:
 
 if __name__ == "__main__":
     multiprocessing.freeze_support()
+    windowed = _no_console()
     _redirect_if_no_console()
     _inject_web_root()
+    if windowed and "--tray" not in sys.argv[1:]:
+        sys.argv.insert(1, "--tray")  # no console: the tray icon is the only UI
     from ghostpad.__main__ import main
 
     sys.exit(main())
