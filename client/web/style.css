@@ -13,7 +13,7 @@ section { margin-top: 1.2rem; }
 .dot { width: .9rem; height: .9rem; border-radius: 50%; background: var(--dim); }
 .status[data-state="ready"] .dot { background: var(--ok); }
 .status[data-state="connecting"] .dot, .status[data-state="handshaking"] .dot,
-.status[data-state="reconnecting"] .dot { background: var(--warn); }
+.status[data-state="reconnecting"] .dot, .status[data-state="waiting"] .dot { background: var(--warn); }
 .status[data-state="closed"] .dot { background: var(--err); }
 .backend { color: var(--dim); }
 .backend:not(:empty)::before { content: "backend: "; }
@@ -71,6 +71,8 @@ input:focus-visible, button:focus-visible { outline: 3px solid #fff; outline-off
 .extras .v { font-size: 1.2rem; }
 .lat-controls { display: flex; gap: .8rem; flex-wrap: wrap; align-items: end; }
 label.inline { flex-direction: row; align-items: center; gap: .5rem; }
+label.check { align-self: center; }
+label.check input { min-width: 0; width: 1.2rem; height: 1.2rem; accent-color: var(--accent); }
 select { font: inherit; font-size: 1rem; color: var(--fg); background: var(--bg); border: 2px solid var(--line);
   border-radius: .4rem; padding: .4rem .5rem; }
 select:focus-visible { outline: 3px solid #fff; outline-offset: 2px; }

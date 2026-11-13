@@ -467,6 +467,11 @@ class GhostpadServer:
             elif not client.active:
                 hello = proto.parse_hello(data)  # type: ignore[arg-type]
                 if hello is None:
+                    if proto.is_probe(data):  # type: ignore[arg-type]
+                        # Automatic reconnects ask first and only send hello if no one owns the pads.
+                        owner = self._owner
+                        await ws.send_text(proto.encode_status(owner.name if owner else None))
+                        continue
                     self.dropped += 1
                     continue
                 if not proto.hello_version_ok(hello):

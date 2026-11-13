@@ -485,6 +485,51 @@ class StaticTests(ServerTestBase):
         w.close()
 
 
+class ProbeTests(ServerTestBase):
+    """Pre-hello {"type":"probe"} -> {"type":"status","owner":...}; never takes the pads."""
+
+    async def probe(self, c: WSClient) -> dict:
+        await c.send_text(p.encode_probe())
+        op, data = await c.recv()
+        msg = json.loads(data)
+        self.assertEqual((msg["type"], msg["version"]), ("status", 1))
+        return msg
+
+    async def test_free_pads_then_hello_on_same_connection(self):
+        c = await self.connect(hello=False)
+        self.assertIsNone((await self.probe(c))["owner"])
+        await c.send_text(p.encode_hello("tv"))
+        op, data = await c.recv()
+        self.assertEqual(json.loads(data)["type"], "welcome")
+        self.assertEqual(self.server.status()["client"], "tv")
+
+    async def test_busy_pads_reported_and_owner_kept(self):
+        owner = await self.welcomed(name="web")
+        await owner.send_binary(p.encode_state(0, 1, S1))
+        c = await self.connect(hello=False)
+        self.assertEqual((await self.probe(c))["owner"], "web")
+        self.assertEqual((await self.probe(c))["owner"], "web")  # may ask again
+        await c.send_close()
+        await self.settle()
+        st = self.server.status()
+        self.assertEqual((st["client"], st["pads"]), ("web", [0]))
+        self.assertEqual(self.server.dropped, 0)  # probes are not junk
+
+    async def test_owner_leaving_frees_pads(self):
+        owner = await self.welcomed(name="web")
+        await owner.send_close()
+        await self.settle()
+        c = await self.connect(hello=False)
+        self.assertIsNone((await self.probe(c))["owner"])
+
+    async def test_probe_after_hello_is_ignored(self):
+        c = await self.welcomed(name="tv")
+        await c.send_text(p.encode_probe())
+        await c.send_binary(p.encode_ping(5, 1.0))
+        op, data = await c.recv()
+        self.assertEqual(data[0], p.MSG_PONG)  # no status reply in between
+
+
 class DisconnectLogTests(ServerTestBase):
     async def test_owner_disconnect_logged_once(self):
         with self.assertLogs("ghostpad.server", level="INFO") as cm:

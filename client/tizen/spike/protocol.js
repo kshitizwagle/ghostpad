@@ -189,6 +189,11 @@ function encodeHello(clientName) {
   return JSON.stringify({ type: 'hello', version: PROTOCOL_VERSION, client: clientName });
 }
 
+/** Before hello: ask who owns the pads. The daemon answers {type: 'status', owner}. */
+function encodeProbe() {
+  return JSON.stringify({ type: 'probe' });
+}
+
 /** Diagnostic line for the daemon log (after hello; truncated to 500 chars, rate-limited). */
 function encodeLog(msg) {
   return JSON.stringify({ type: 'log', msg: String(msg) });
@@ -208,7 +213,7 @@ function closeMessage(code) {
   switch (code) {
     case CLOSE.NORMAL: return 'Closed normally.';
     case CLOSE.VERSION: return 'Protocol version mismatch (4000). Update the client or daemon.';
-    case CLOSE.TAKEN_OVER: return 'Taken over by a newer client (4001). Not reconnecting.';
+    case CLOSE.TAKEN_OVER: return 'Taken over by a newer client (4001).';
     case CLOSE.BAD_TOKEN: return 'Bad or missing token (4002).';
     default: return `Connection closed (${code}).`;
   }
@@ -221,6 +226,7 @@ window.GhostpadProtocol = {
   neutralState: neutralState, statesEqual: statesEqual, encodeState: encodeState,
   encodePing: encodePing, encodePadGone: encodePadGone, decodePong: decodePong,
   decodeRumble: decodeRumble, messageType: messageType, encodeHello: encodeHello,
-  encodeLog: encodeLog, parseControl: parseControl, closeMessage: closeMessage
+  encodeProbe: encodeProbe, encodeLog: encodeLog, parseControl: parseControl,
+  closeMessage: closeMessage
 };
 })();

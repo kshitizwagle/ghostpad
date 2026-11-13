@@ -28,7 +28,8 @@ class PackageSpikeTests(unittest.TestCase):
             self.assertIn(need, names)
         with zipfile.ZipFile(self.out) as z:
             self.assertEqual(z.namelist(), names)
-            self.assertEqual(self.config_of(z), {"pcHost": "192.168.1.100", "pcPort": 47800, "token": ""})
+            self.assertEqual(self.config_of(z), {"pcHost": "192.168.1.100", "pcPort": 47800, "token": "",
+                                                 "autoConnect": True})
             self.assertEqual(z.read("main.js"), (ps.SPIKE / "main.js").read_bytes())
 
     def test_signing_material_and_dotfiles_skipped(self):
@@ -37,10 +38,11 @@ class PackageSpikeTests(unittest.TestCase):
         for name in ("config.xml", "index.html", "author-signature.xml", "signature1.xml",
                      "dev.p12", "old.wgt", ".sign/x.p12", ".hidden"):
             (root / name).write_text("x")
-        names = ps.build(self.out, "", 47800, 'a"b', root=root)
+        names = ps.build(self.out, "", 47800, 'a"b', root=root, auto_connect=False)
         self.assertEqual(names, ["config.xml", "index.html", ps.CONFIG_JS])
         with zipfile.ZipFile(self.out) as z:
             self.assertEqual(self.config_of(z)["token"], 'a"b')
+            self.assertIs(self.config_of(z)["autoConnect"], False)
 
     def test_host_validation(self):
         for ok in ("", "192.168.1.100", "fe80::1", "gaming-pc", "pc.lan"):

@@ -178,6 +178,11 @@ export function encodeHello(clientName) {
   return JSON.stringify({ type: 'hello', version: PROTOCOL_VERSION, client: clientName });
 }
 
+/** Before hello: ask who owns the pads. The daemon answers {type: 'status', owner}. */
+export function encodeProbe() {
+  return JSON.stringify({ type: 'probe' });
+}
+
 /** Diagnostic line for the daemon log (after hello; truncated to 500 chars, rate-limited). */
 export function encodeLog(msg) {
   return JSON.stringify({ type: 'log', msg: String(msg) });
@@ -197,7 +202,7 @@ export function closeMessage(code) {
   switch (code) {
     case CLOSE.NORMAL: return 'Closed normally.';
     case CLOSE.VERSION: return 'Protocol version mismatch (4000). Update the client or daemon.';
-    case CLOSE.TAKEN_OVER: return 'Taken over by a newer client (4001). Not reconnecting.';
+    case CLOSE.TAKEN_OVER: return 'Taken over by a newer client (4001).';
     case CLOSE.BAD_TOKEN: return 'Bad or missing token (4002).';
     default: return `Connection closed (${code}).`;
   }

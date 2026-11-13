@@ -43,6 +43,20 @@ message (DESIGN.md), plus a status line every 5 s. They show up in the daemon co
 Lines logged before the WebSocket is up are queued (last 300) and sent after the welcome,
 at most 12 lines/s (daemon limit 20/s).
 
+## Connecting and reconnecting
+
+Rules in DESIGN.md "Reconnecting". For the spike:
+
+| Event | Behaviour |
+|---|---|
+| App launch | Takes the pads (`hello` at once), from `pcHost` or, if that is empty, the last PC that sent `welcome` (`localStorage` `ghostpad.spike.lastPc`) |
+| Link drop, daemon restart | Every 2 s: probe, `hello` only if no other client has the pads (else again in 3 s) |
+| Taken over (4001), `autoConnect` on | Waits; probes every 3 s while a controller is present and takes the pads back once they are free |
+| Taken over, `autoConnect` off | Stops, as before; relaunch the app |
+| 4000 / 4002 | Stops (fix the version or token) |
+
+`autoConnect` is on by default; `package_spike.py --no-auto-connect` turns it off.
+
 ## Remote keys in the spike
 
 | Key | Action |

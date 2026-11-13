@@ -73,9 +73,14 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(p.parse_client_log(p.encode_client_log("ünï")), "ünï")
         for bad in ("nope", p.encode_hello("x"), '{"type":"log"}', '{"type":"log","msg":5}', "[]"):
             self.assertIsNone(p.parse_client_log(bad))
+        self.assertTrue(p.is_probe(p.encode_probe()))
+        for bad in ("nope", p.encode_hello("x"), "[]", '{"type":"probes"}'):
+            self.assertFalse(p.is_probe(bad))
         import json
         self.assertEqual(json.loads(p.encode_welcome("mock")),
                          {"type": "welcome", "version": 1, "backend": "mock", "max_pads": 4})
+        self.assertEqual(json.loads(p.encode_status(None)), {"type": "status", "version": 1, "owner": None})
+        self.assertEqual(json.loads(p.encode_status("tv"))["owner"], "tv")
 
 
 if __name__ == "__main__":

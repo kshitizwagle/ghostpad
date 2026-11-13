@@ -1,7 +1,7 @@
 // WebSocket connection manager: URL building, hello/welcome handshake,
-// auto-reconnect with capped backoff, status events. DOM-free except for
-// WebSocket/localStorage/location access, all guarded.
-import { CLOSE, closeMessage, encodeHello, parseControl } from './protocol.js';
+// auto-reconnect with capped backoff (asking first: probe/status), status events.
+// DOM-free except for WebSocket/localStorage/location access, all guarded.
+import { CLOSE, closeMessage, encodeHello, encodeProbe, parseControl } from './protocol.js';
 
 export const DEFAULT_PORT = 47800;
 const LS_HOST = 'ghostpad.host';
@@ -52,47 +52,61 @@ export function persistConfig(host, token) {
 
 /**
  * Events (EventTarget):
- *  'status'  detail {state, message, url, backend, maxPads, attempt}
- *            state: idle | connecting | handshaking | ready | reconnecting | closed
+ *  'status'  detail {state, message, url, backend, maxPads, attempt, owner}
+ *            state: idle | connecting | handshaking | ready | reconnecting | waiting | closed
+ *            waiting: another client owns the pads, or (resume) no controller yet
  *  'ready'   detail welcome object (fired after every successful handshake)
  *  'binary'  detail ArrayBuffer (server -> client binary frame)
+ *
+ * Connect modes (DESIGN.md "Reconnecting"):
+ *  takeover   connect(): a user action. hello at once; takes the pads from any owner.
+ *  reconnect  after a drop: probe first, hello only if no client owns the pads.
+ *  resume     autoConnect(), and after a takeover (4001) in auto mode: like reconnect,
+ *             and only while canResume() holds (a controller is present).
+ * Automatic connects therefore never take the pads from another client.
  */
 export class Transport extends EventTarget {
-  constructor({ clientName = 'ghostpad-web', minDelay = 500, maxDelay = 5000 } = {}) {
+  constructor({
+    clientName = 'ghostpad-web', minDelay = 500, maxDelay = 5000, busyDelay = 3000,
+    probeTimeout = 1500, canResume = () => true, WebSocketImpl = globalThis.WebSocket,
+  } = {}) {
     super();
     this.clientName = clientName;
     this.minDelay = minDelay;
     this.maxDelay = maxDelay;
+    this.busyDelay = busyDelay;
+    this.probeTimeout = probeTimeout;
+    this.canResume = canResume;
+    this.WebSocketImpl = WebSocketImpl;
+    this.auto = false;      // auto mode: after a takeover, resume when the pads are free
     this.ws = null;
     this.state = 'idle';
     this.url = '';
     this.backend = '';
     this.maxPads = 0;
+    this.owner = null;      // owner named by the last status reply
     this.attempt = 0;
+    this.mode = 'takeover';
     this._timer = null;
+    this._probeTimer = null;
     this._wanted = false;
   }
 
   get ready() { return this.state === 'ready'; }
 
-  connect(url) {
-    this.disconnect(true);
-    this.url = url;
-    this._wanted = true;
-    this.attempt = 0;
-    this._open();
-  }
+  /** User action: connect and take the pads, even from another client. */
+  connect(url) { this._start(url, 'takeover'); }
+
+  /** Automatic: connect only when the pads are free and canResume() holds. */
+  autoConnect(url) { this._start(url, 'resume'); }
+
+  /** Auto mode: after being taken over, keep asking and resume when the pads are free. */
+  setAuto(on) { this.auto = !!on; }
 
   disconnect(silent = false) {
     this._wanted = false;
-    clearTimeout(this._timer);
-    this._timer = null;
-    const ws = this.ws;
-    this.ws = null;
-    if (ws) {
-      ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null;
-      try { ws.close(1000); } catch { /* ignore */ }
-    }
+    this._clearTimers();
+    this._drop();
     if (!silent) this._emit('idle', 'Disconnected.');
     else this.state = 'idle';
   }
@@ -103,20 +117,53 @@ export class Transport extends EventTarget {
     try { this.ws.send(buf); return true; } catch { return false; }
   }
 
+  _start(url, mode) {
+    this.disconnect(true);
+    this.url = url;
+    this._wanted = true;
+    this.attempt = 0;
+    this._attempt(mode);
+  }
+
+  _clearTimers() {
+    clearTimeout(this._timer);
+    clearTimeout(this._probeTimer);
+    this._timer = this._probeTimer = null;
+  }
+
+  _drop() {
+    const ws = this.ws;
+    this.ws = null;
+    if (ws) {
+      ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null;
+      try { ws.close(1000); } catch { /* ignore */ }
+    }
+  }
+
   _emit(state, message) {
     this.state = state;
     this.dispatchEvent(new CustomEvent('status', { detail: {
       state, message, url: this.url, backend: this.backend,
-      maxPads: this.maxPads, attempt: this.attempt,
+      maxPads: this.maxPads, attempt: this.attempt, owner: this.owner,
     } }));
   }
 
-  _open() {
-    this._emit(this.attempt === 0 ? 'connecting' : 'reconnecting',
+  _retry(mode, delay, state, message) {
+    this._emit(state, message);
+    this._timer = setTimeout(() => { this._timer = null; if (this._wanted) this._attempt(mode); }, delay);
+  }
+
+  _attempt(mode) {
+    this.mode = mode;
+    if (mode === 'resume' && !this.canResume()) {
+      this._retry(mode, 1000, 'waiting', 'Waiting for a controller before connecting...');
+      return;
+    }
+    this._emit(this.attempt === 0 && mode === 'takeover' ? 'connecting' : 'reconnecting',
       this.attempt === 0 ? 'Connecting...' : `Reconnecting (attempt ${this.attempt})...`);
     let ws;
     try {
-      ws = new WebSocket(this.url);
+      ws = new this.WebSocketImpl(this.url);
     } catch (e) {
       this._emit('closed', `Invalid URL: ${e.message}`);
       this._wanted = false;
@@ -124,33 +171,58 @@ export class Transport extends EventTarget {
     }
     ws.binaryType = 'arraybuffer';
     this.ws = ws;
-    ws.onopen = () => {
-      if (this.ws !== ws) return;
+    const hello = () => {
+      clearTimeout(this._probeTimer);
+      this._probeTimer = null;
       this._emit('handshaking', 'Connected, waiting for welcome...');
       ws.send(encodeHello(this.clientName));
     };
+    ws.onopen = () => {
+      if (this.ws !== ws) return;
+      if (mode === 'takeover') { hello(); return; }
+      ws.send(encodeProbe());
+      // A daemon without probe support never answers: fall back to hello.
+      this._probeTimer = setTimeout(() => { if (this.ws === ws) hello(); }, this.probeTimeout);
+    };
     ws.onmessage = (ev) => {
       if (this.ws !== ws) return;
-      if (typeof ev.data === 'string') {
-        const m = parseControl(ev.data);
-        if (m && m.type === 'welcome') {
-          this.backend = String(m.backend ?? '');
-          this.maxPads = Number(m.max_pads ?? 0);
-          this.attempt = 0;
-          this._emit('ready', `Connected (backend: ${this.backend}).`);
-          this.dispatchEvent(new CustomEvent('ready', { detail: m }));
-        }
-      } else {
+      if (typeof ev.data !== 'string') {
         this.dispatchEvent(new CustomEvent('binary', { detail: ev.data }));
+        return;
+      }
+      const m = parseControl(ev.data);
+      if (m && m.type === 'status' && this._probeTimer !== null) {
+        this.owner = m.owner == null ? null : String(m.owner);
+        if (this.owner === null) { hello(); return; }
+        clearTimeout(this._probeTimer);
+        this._probeTimer = null;
+        this._drop();
+        this._retry(mode, this.busyDelay, 'waiting',
+          `Pads in use by "${this.owner}". Connecting when they are free...`);
+      } else if (m && m.type === 'welcome') {
+        this.backend = String(m.backend ?? '');
+        this.maxPads = Number(m.max_pads ?? 0);
+        this.owner = null;
+        this.attempt = 0;
+        this.mode = 'reconnect';  // from now on, automatic reconnects ask first
+        this._emit('ready', `Connected (backend: ${this.backend}).`);
+        this.dispatchEvent(new CustomEvent('ready', { detail: m }));
       }
     };
     ws.onerror = () => { /* onclose follows */ };
     ws.onclose = (ev) => {
       if (this.ws !== ws) return;
       this.ws = null;
+      clearTimeout(this._probeTimer);
+      this._probeTimer = null;
       if (!this._wanted) return;
       const code = ev.code;
-      // 4000/4001/4002 are not fixed by retrying.
+      if (code === CLOSE.TAKEN_OVER && this.auto) {
+        this._retry('resume', this.busyDelay, 'waiting',
+          `${closeMessage(code)} Connecting again when the pads are free...`);
+        return;
+      }
+      // 4000/4002 are not fixed by retrying; 4001 without auto mode is final.
       if (code === CLOSE.TAKEN_OVER || code === CLOSE.VERSION || code === CLOSE.BAD_TOKEN) {
         this._wanted = false;
         this._emit('closed', closeMessage(code));
@@ -158,9 +230,9 @@ export class Transport extends EventTarget {
       }
       this.attempt += 1;
       const delay = Math.min(this.maxDelay, this.minDelay * 2 ** (this.attempt - 1));
-      this._emit('reconnecting',
+      const next = this.mode === 'takeover' ? 'reconnect' : this.mode;
+      this._retry(next, delay, 'reconnecting',
         `${code === 1006 ? 'Connection failed' : closeMessage(code)} Retrying in ${(delay / 1000).toFixed(1)} s (attempt ${this.attempt}).`);
-      this._timer = setTimeout(() => { if (this._wanted) this._open(); }, delay);
     };
   }
 }

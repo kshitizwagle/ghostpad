@@ -18,6 +18,9 @@
   var PC_HOST = CFG.pcHost || '';
   var PC_PORT = CFG.pcPort || 47800;
   var PC_TOKEN = CFG.token || '';  // only if the daemon runs with --token
+  // After being taken over by another client, reconnect once it leaves (never steal back).
+  var AUTO_CONNECT = CFG.autoConnect !== false;
+  var LAST_PC_KEY = 'ghostpad.spike.lastPc';  // last PC that sent welcome: used when none is configured
   var AUTO_PICK_MS = 5000;        // auto-pick first connected HDMI after this long without input
   var FULLSCREEN_RECT = ['0', '0', '1920px', '1080px']; // show(): x, y, w, h as strings
   var SEND_HEARTBEAT_MS = 50;     // DESIGN.md send policy
@@ -394,26 +397,73 @@
   window.setPcHost = function (host, token) {
     try { localStorage.setItem('ghostpad.spike.host', host || ''); if (token !== undefined) localStorage.setItem('ghostpad.spike.token', token); } catch (e) { /* ignore */ }
     PC_HOST = host || ''; if (token !== undefined) PC_TOKEN = token;
-    wsStop(); wsStart();
+    wsStop(); wsStart('takeover');
   };
 
-  function wsStart() {
+  // Connect modes (DESIGN.md "Reconnecting"), same as client/web/transport.js:
+  //  takeover   app launch / setPcHost: hello at once, takes the pads from any owner.
+  //  reconnect  after a drop: probe first, hello only if no client owns the pads.
+  //  resume     after a takeover (4001) with autoConnect: like reconnect, and only with a pad.
+  var wsMode = 'takeover', probeTimer = null;
+  var BUSY_MS = 3000, PROBE_TIMEOUT_MS = 1500, RETRY_MS = 2000;
+
+  function hasPad() {
+    var pads = getPads();
+    if (pads) for (var i = 0; i < pads.length; i++) if (pads[i]) return true;
+    return false;
+  }
+
+  function rememberPc() {
+    try { localStorage.setItem(LAST_PC_KEY, JSON.stringify({ host: PC_HOST, port: PC_PORT, token: PC_TOKEN })); } catch (e) { /* ignore */ }
+  }
+
+  function wsStart(mode) {
     wsStop();
+    wsMode = mode || 'takeover';
     if (!PC_HOST) { wsState = 'disabled'; wsInfo = 'PC_HOST empty (set in main.js or setPcHost("ip") in the inspector)'; return; }
-    wsState = 'connecting'; wsInfo = wsUrl();
-    log('ws connecting ' + wsUrl());
-    try { ws = new WebSocket(wsUrl()); } catch (e) { wsState = 'error'; wsInfo = 'ctor threw ' + errStr(e); log(wsInfo); scheduleReconnect(); return; }
+    if (wsMode === 'resume' && !hasPad()) {
+      wsState = 'waiting'; wsInfo = 'waiting for a controller before reconnecting';
+      scheduleReconnect('resume', 1000);
+      return;
+    }
+    wsState = 'connecting (' + wsMode + ')'; wsInfo = wsUrl();
+    log('ws connecting ' + wsUrl() + ' (' + wsMode + ')');
+    try { ws = new WebSocket(wsUrl()); } catch (e) { wsState = 'error'; wsInfo = 'ctor threw ' + errStr(e); log(wsInfo); scheduleReconnect(wsMode, RETRY_MS); return; }
     ws.binaryType = 'arraybuffer';
-    ws.onopen = function () {
+    var sock = ws;
+    function sendHello() {
+      if (probeTimer) { clearTimeout(probeTimer); probeTimer = null; }
       wsState = 'open (hello sent)';
-      ws.send(P.encodeHello('tizen-spike'));
-      log('ws open, hello sent');
+      sock.send(P.encodeHello('tizen-spike'));
+      log('ws hello sent');
+    }
+    ws.onopen = function () {
+      if (wsMode === 'takeover') { sendHello(); return; }
+      wsState = 'open (probe sent)';
+      sock.send(P.encodeProbe());
+      // A daemon without probe support never answers: fall back to hello.
+      probeTimer = setTimeout(function () { probeTimer = null; if (ws === sock) { log('no status reply (older daemon?), sending hello'); sendHello(); } }, PROBE_TIMEOUT_MS);
     };
     ws.onmessage = function (ev) {
       if (typeof ev.data === 'string') {
         var c = P.parseControl(ev.data);
         log('ws text: ' + ev.data);
-        if (c && c.type === 'welcome') { wsState = 'welcome (backend=' + c.backend + ')'; wsReady(); }
+        if (c && c.type === 'status' && probeTimer) {
+          if (c.owner == null) { sendHello(); return; }
+          clearTimeout(probeTimer); probeTimer = null;
+          wsState = 'waiting (pads in use by ' + c.owner + ')'; wsInfo = 'retry in ' + BUSY_MS / 1000 + ' s';
+          log('pads in use by "' + c.owner + '", asking again in ' + BUSY_MS / 1000 + ' s');
+          sock.onclose = null; try { sock.close(1000); } catch (e) { /* ignore */ }
+          ws = null;
+          scheduleReconnect(wsMode, BUSY_MS);
+          return;
+        }
+        if (c && c.type === 'welcome') {
+          wsState = 'welcome (backend=' + c.backend + ')';
+          wsMode = 'reconnect';  // from now on, automatic reconnects ask first
+          rememberPc();
+          wsReady();
+        }
         return;
       }
       var pong = P.decodePong(ev.data);
@@ -428,16 +478,28 @@
       wsState = 'closed'; wsInfo = P.closeMessage(ev.code);
       log('ws close code=' + ev.code + ' reason="' + ev.reason + '"');
       stopTimers(); ws = null;
-      if (ev.code !== P.CLOSE.TAKEN_OVER && ev.code !== P.CLOSE.VERSION && ev.code !== P.CLOSE.BAD_TOKEN) scheduleReconnect();
+      if (probeTimer) { clearTimeout(probeTimer); probeTimer = null; }
+      if (ev.code === P.CLOSE.TAKEN_OVER) {
+        if (!AUTO_CONNECT) return;
+        wsState = 'waiting (taken over)'; wsInfo = 'reconnects when the pads are free';
+        log('taken over; reconnecting when the pads are free');
+        scheduleReconnect('resume', BUSY_MS);
+        return;
+      }
+      if (ev.code === P.CLOSE.VERSION || ev.code === P.CLOSE.BAD_TOKEN) return;
+      scheduleReconnect(wsMode === 'takeover' ? 'reconnect' : wsMode, RETRY_MS);
     };
   }
 
   function wsStop() {
     if (wsReconnectTimer) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; }
+    if (probeTimer) { clearTimeout(probeTimer); probeTimer = null; }
     stopTimers();
     if (ws) { try { ws.onclose = null; ws.close(); } catch (e) { /* ignore */ } ws = null; }
   }
-  function scheduleReconnect() { if (PC_HOST && !wsReconnectTimer) wsReconnectTimer = setTimeout(function () { wsReconnectTimer = null; wsStart(); }, 2000); }
+  function scheduleReconnect(mode, delay) {
+    if (PC_HOST && !wsReconnectTimer) wsReconnectTimer = setTimeout(function () { wsReconnectTimer = null; wsStart(mode); }, delay);
+  }
   function stopTimers() { if (pingTimer) clearInterval(pingTimer); if (hbTimer) clearInterval(hbTimer); pingTimer = hbTimer = null; }
 
   function wsReady() {
@@ -553,13 +615,21 @@
     readSources();
   }
 
+  // PC address: setPcHost() override, else local-config.js, else the last PC that welcomed us.
   try {
     var h = localStorage.getItem('ghostpad.spike.host'); if (h) PC_HOST = h;
     var t = localStorage.getItem('ghostpad.spike.token'); if (t) PC_TOKEN = t;
+    if (!PC_HOST) {
+      var lastPc = JSON.parse(localStorage.getItem(LAST_PC_KEY) || 'null');
+      if (lastPc && lastPc.host) {
+        PC_HOST = lastPc.host; PC_PORT = lastPc.port || PC_PORT; if (!PC_TOKEN) PC_TOKEN = lastPc.token || '';
+        log('no PC configured; using the last PC that answered: ' + PC_HOST + ':' + PC_PORT);
+      }
+    }
   } catch (e) { /* ignore */ }
 
   applyOverlayMode();
   requestAnimationFrame(frame);
   start();
-  wsStart();
+  wsStart('takeover');  // launching the app is a user action: take the pads
 })();
