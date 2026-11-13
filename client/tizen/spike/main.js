@@ -3,21 +3,28 @@
 //
 // Flow: detect APIs -> list VIDEOSOURCE -> pick HDMI -> tvwindow.setSource -> tvwindow.show
 // (z-order BEHIND, fallback FRONT) -> overlay with gamepad/rAF/visibility readouts ->
-// optional WebSocket smoke test to the daemon.
+// optional WebSocket smoke test to the daemon. With the WebSocket up, every log line and a
+// status line every 5 s are also sent to the daemon ({"type":"log"}), so results can be read
+// in the daemon log on the PC without a web inspector.
 (function () {
   'use strict';
 
   // ---- Config -------------------------------------------------------------------------
-  // Set to the PC's LAN IP (e.g. '192.168.1.50') to enable the WebSocket smoke test.
-  // Empty string = disabled. Can also be set at runtime from the web inspector console:
-  //   setPcHost('192.168.1.50')   (persisted in localStorage)
-  var PC_HOST = '';
-  var PC_PORT = 47800;
-  var PC_TOKEN = '';              // only if the daemon runs with --token
+  // PC address for the WebSocket smoke test, from local-config.js (written into the package by
+  // client/tizen/package_spike.py --pc-host). Empty host = disabled. Can also be set at runtime
+  // from the web inspector console: setPcHost('192.168.1.50') (persisted in localStorage,
+  // which then wins over local-config.js).
+  var CFG = window.GHOSTPAD_SPIKE_CONFIG || {};
+  var PC_HOST = CFG.pcHost || '';
+  var PC_PORT = CFG.pcPort || 47800;
+  var PC_TOKEN = CFG.token || '';  // only if the daemon runs with --token
   var AUTO_PICK_MS = 5000;        // auto-pick first connected HDMI after this long without input
   var FULLSCREEN_RECT = ['0', '0', '1920px', '1080px']; // show(): x, y, w, h as strings
   var SEND_HEARTBEAT_MS = 50;     // DESIGN.md send policy
   var PING_MS = 250;
+  var STATUS_MS = 5000;           // status line to the daemon log
+  var REMOTE_LOG_MAX = 300;       // queued lines kept while the WebSocket is down
+  var REMOTE_LOG_PER_TICK = 3;    // per PING_MS tick: 12 lines/s, under the daemon's 20/s limit
 
   var P = window.GhostpadProtocol;
   var hasTizen = typeof window.tizen !== 'undefined';
@@ -36,6 +43,19 @@
     try { console.log('[spike] ' + line); } catch (e) { /* ignore */ }
     logLines.push(line);
     if (logLines.length > 14) logLines.shift();
+    remote(line);
+  }
+
+  // Lines for the daemon log; drained by the PING timer once the daemon has welcomed us.
+  var remoteQueue = [], remoteDropped = 0;
+  function remote(line) {
+    remoteQueue.push(line);
+    if (remoteQueue.length > REMOTE_LOG_MAX) { remoteQueue.shift(); remoteDropped++; }
+  }
+  function drainRemote() {
+    if (!ws || ws.readyState !== 1) return;
+    if (remoteDropped) { ws.send(P.encodeLog('(' + remoteDropped + ' earlier lines dropped)')); remoteDropped = 0; }
+    for (var i = 0; i < REMOTE_LOG_PER_TICK && remoteQueue.length; i++) ws.send(P.encodeLog(remoteQueue.shift()));
   }
 
   // Step results: name -> {status: 'PENDING'|'OK'|'FAIL'|'SKIP', detail}
@@ -151,7 +171,9 @@
       if (k === KEY.DOWN || k === KEY.RIGHT) { pickIndex = (pickIndex + 1) % sources.length; cancelAutoPick(); ev.preventDefault(); return; }
       if (k === KEY.ENTER) { cancelAutoPick(); pickSource(sources[pickIndex]); ev.preventDefault(); return; }
     }
-    if (k === KEY.INFO || k === KEY.GREEN || ev.key === 'i' || ev.key === 'g') {
+    // Enter (remote OK) too: the Samsung Smart Remote has no Info or colour keys. Controller
+    // buttons do not arrive as key events on the U8500F (verified), so A cannot trigger this.
+    if (k === KEY.INFO || k === KEY.GREEN || k === KEY.ENTER || ev.key === 'i' || ev.key === 'g') {
       overlayMode = (overlayMode + 1) % 3; applyOverlayMode(); ev.preventDefault();
     } else if (k === KEY.YELLOW || ev.key === 'y') {
       toggleZ(); ev.preventDefault();
@@ -331,7 +353,7 @@
   }
 
   // Detect "input is arriving": g.timestamp changes, or any button/axis differs from last poll.
-  var lastSig = {};
+  var lastSig = {}, lastBtns = {};
   function trackInput(pads) {
     if (!pads) return;
     for (var i = 0; i < pads.length; i++) {
@@ -341,6 +363,13 @@
       var anyBtn = false;
       for (j = 0; j < g.buttons.length; j++) { sig += g.buttons[j].pressed ? '1' : '0'; if (g.buttons[j].pressed) anyBtn = true; }
       if (anyBtn) lastPadButtonAt = Date.now();
+      var btns = sig;
+      if (lastBtns[i] !== undefined && lastBtns[i] !== btns) {
+        var down = [];
+        for (j = 0; j < btns.length; j++) if (btns.charAt(j) === '1') down.push(j);
+        log('pad' + i + ' buttons=[' + down.join(',') + '] hidden=' + document.hidden + ' video=' + (videoShown ? zPos : 'off'));
+      }
+      lastBtns[i] = btns;
       for (j = 0; j < g.axes.length; j++) sig += ',' + g.axes[j].toFixed(2);
       if (lastSig[i] !== sig || lastGpTs[i] !== g.timestamp) {
         if (lastSig[i] !== sig) lastInputNote = 'pad' + i + ' changed at ' + ts() + ' (hidden=' + document.hidden + ')';
@@ -415,6 +444,7 @@
     lastSent = {}; lastSentAt = {}; announced = {};
     pingTimer = setInterval(function () {
       if (ws && ws.readyState === 1) { ws.send(P.encodePing(++pingId, performance.now())); pingsSent++; }
+      drainRemote();
     }, PING_MS);
     // Heartbeat/forward loop on a timer so STATE keeps flowing at 50 ms even if rAF were throttled.
     hbTimer = setInterval(forwardStates, SEND_HEARTBEAT_MS);
@@ -437,6 +467,20 @@
       }
     }
   }
+
+  // Status line for the daemon log (not the on-screen log, which it would flood).
+  function statusLine() {
+    var pads = getPads(), names = [];
+    if (pads) for (var i = 0; i < pads.length; i++) if (pads[i]) names.push(i + ':' + pads[i].mapping);
+    var r2 = median(rtts);
+    return 'status hidden=' + document.hidden + ' rAF/s=' + rafPerSec + ' timer/s=' + timerPerSec +
+      ' padUpd/s=' + gpUpdatesPerSec + ' pads=[' + names.join(' ') + '] video=' + (videoShown ? zPos : 'off') +
+      ' res=' + resInfo + ' STATE=' + statesSent + ' RTTmed=' + (r2 === null ? '-' : r2.toFixed(1)) + 'ms' +
+      ' steps=' + STEP_ORDER.map(function (n) { return steps[n].status.charAt(0); }).join('');
+  }
+  setInterval(function () {
+    if (ws && ws.readyState === 1 && wsState.indexOf('welcome') === 0) remote('[' + ts() + '] ' + statusLine());
+  }, STATUS_MS);
 
   function median(a) { if (!a.length) return null; var b = a.slice().sort(function (x, y) { return x - y; }); return b[Math.floor(b.length / 2)]; }
 

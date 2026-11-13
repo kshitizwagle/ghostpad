@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  encodeState, encodePing, encodePadGone, decodePong, decodeRumble, encodeHello,
+  encodeState, encodePing, encodePadGone, decodePong, decodeRumble, encodeHello, encodeLog,
   mapGamepad, scaleTrigger, scaleAxis, statesEqual, neutralState, XB, closeMessage,
 } from '../protocol.js';
 import { buildUrl } from '../transport.js';
@@ -58,6 +58,11 @@ test('RUMBLE decode', () => {
 
 test('hello JSON', () => {
   assert.deepEqual(JSON.parse(encodeHello('x')), { type: 'hello', version: 1, client: 'x' });
+});
+
+test('log JSON', () => {
+  assert.deepEqual(JSON.parse(encodeLog('pad 0: A')), { type: 'log', msg: 'pad 0: A' });
+  assert.deepEqual(JSON.parse(encodeLog(42)), { type: 'log', msg: '42' });
 });
 
 test('all 17 buttons map per DESIGN.md', () => {

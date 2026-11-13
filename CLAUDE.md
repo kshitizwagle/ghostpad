@@ -26,7 +26,7 @@ daemon/tests/      unittest suite, must run without Windows
 client/web/        browser test client, static, no build step
 client/web/tests/  node:test suite for the web client
 client/tizen/      Tizen TV app
-client/tizen/spike/  Tizen feasibility spike (M4)
+client/tizen/spike/  Tizen feasibility spike (M4); package_spike.py packs it
 bench/             latency scripts and their tests
 docs/              procedures and findings
 ```
@@ -38,6 +38,8 @@ cd daemon && python3 -m unittest discover -s tests -v   # daemon tests
 python3 -m unittest discover -s bench                    # bench tests (from repo root)
 python bench/vigem_check.py                              # Windows + ViGEmBus only: end-to-end via XInput
 node --test "client/web/tests/*.test.mjs"                # web client tests (from repo root)
+python3 -m unittest discover -s client/tizen               # Tizen packaging tests (from repo root)
+python client/tizen/package_spike.py --pc-host <PC_IP>   # unsigned spike .wgt (git-ignored)
 python -m ghostpad --backend mock --verbose              # run locally (from daemon/)
 python -m ghostpad --backend mock --trace                # also log every pad op at DEBUG
 python -m ghostpad --tray                                # Windows: tray icon instead of a console

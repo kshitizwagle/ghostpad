@@ -26,6 +26,10 @@ WATCHDOG_TIMEOUT_NS = 200_000_000
 WATCHDOG_TICK_S = 0.010
 HELLO_TIMEOUT_S = 5.0
 MAX_HEAD = 16 * 1024
+CLIENT_LOG_BURST = 50  # client "log" lines accepted at once
+CLIENT_LOG_RATE = 20.0  # then per second
+
+client_log = logging.getLogger("ghostpad.client")
 
 DEFAULT_WEB_ROOT = Path(__file__).resolve().parents[2] / "client" / "web"
 
@@ -50,7 +54,7 @@ _REASONS = {200: "OK", 400: "Bad Request", 403: "Forbidden", 404: "Not Found", 4
 
 class Client:
     __slots__ = ("ws", "name", "active", "plugged", "last_seq", "neutralized",
-                 "last_input_ns", "rumble")
+                 "last_input_ns", "rumble", "log_tokens", "log_t", "log_dropped")
 
     def __init__(self, ws: wsproto.WebSocket, max_pads: int) -> None:
         self.ws = ws
@@ -61,6 +65,9 @@ class Client:
         self.neutralized = False
         self.last_input_ns = perf_counter_ns()  # last STATE / PAD_GONE (not PING)
         self.rumble: list[tuple[int, int]] = [(0, 0)] * max_pads  # last RUMBLE sent per pad
+        self.log_tokens = float(CLIENT_LOG_BURST)  # client "log" messages: token bucket
+        self.log_t = perf_counter_ns()
+        self.log_dropped = 0
 
 
 def _quiet_connection_resets(loop: asyncio.AbstractEventLoop, context: dict) -> None:
@@ -468,7 +475,26 @@ class GhostpadServer:
                     return
                 self._take_ownership(client, str(hello.get("client", "?"))[:64])
                 await ws.send_text(self._welcome)
-            # text frames after hello: ignored
+            else:
+                self._client_text(client, data)  # type: ignore[arg-type]
+
+    def _client_text(self, client: Client, text: str) -> None:
+        """Text after hello: {"type":"log"} is logged (rate-limited); anything else is ignored."""
+        msg = proto.parse_client_log(text)
+        if msg is None:
+            return
+        now = perf_counter_ns()
+        client.log_tokens = min(float(CLIENT_LOG_BURST),
+                                client.log_tokens + (now - client.log_t) / 1e9 * CLIENT_LOG_RATE)
+        client.log_t = now
+        if client.log_tokens < 1:
+            client.log_dropped += 1
+            return
+        client.log_tokens -= 1
+        if client.log_dropped:
+            client_log.warning("%s: %d log lines dropped (rate limit)", client.name, client.log_dropped)
+            client.log_dropped = 0
+        client_log.info("%s: %s", client.name, msg)
 
     def _take_ownership(self, client: Client, name: str) -> None:
         old = self._owner
