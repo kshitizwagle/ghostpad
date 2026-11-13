@@ -15,7 +15,7 @@ controller ──BT/USB──▶ client (TV / browser)
                         ▼
               ghostpad daemon (PC)  ◀── HTTP GET / serves client/web/ (same port)
                 ┌───────────────────────────────┐
-                │ ws server → decode → watchdog │  no frame for 200 ms → pads neutral
+                │ ws server → decode → watchdog │  no input for 200 ms → pads neutral
                 │            → PadBackend       │  close → neutral, then unplug
                 └──────────────┬────────────────┘
                                │ vigem (Windows) | mock | uinput (later)
@@ -31,11 +31,12 @@ Input only. Video and audio never touch the daemon.
 
 | Path | Contents |
 |---|---|
-| `daemon/ghostpad/` | Python package: server, protocol, backends, watchdog, CLI |
+| `daemon/ghostpad/` | Python package: `server.py`, `wsproto.py`, `protocol.py`, `stats.py`, `backends/`, `__main__.py` (CLI) |
 | `daemon/tests/` | Unit tests (`unittest`), runnable without Windows |
-| `client/web/` | Browser test client: static, no build step, served by the daemon |
-| `client/tizen/` | Tizen TV app (later, M4/M5) |
-| `bench/` | Latency scripts (synthetic client, analysis) |
+| `client/web/` | Browser test client: static, no build step, served by the daemon; JS tests in `client/web/tests/` |
+| `client/tizen/` | Tizen TV app |
+| `client/tizen/spike/` | Tizen feasibility spike (M4): minimal app, see `docs/tizen-spike.md` |
+| `bench/` | Latency scripts (synthetic client, analysis) and their tests |
 | `docs/` | Procedures, e.g. `latency-testing.md` |
 
 ## Daemon
@@ -46,30 +47,35 @@ Input only. Video and audio never touch the daemon.
 - Only runtime dependency: `vgamepad` (Windows, needs the ViGEmBus driver), imported
   lazily so the daemon runs and tests on any OS with the `mock` backend.
 - Single port, default `47800`:
-  - plain HTTP `GET` serves the static web client from `client/web/`; `GET /stats` returns JSON counters
+  - plain HTTP `GET` serves the static web client from `client/web/` (override with `--web-root`); `GET /stats` returns JSON counters
   - WebSocket upgrade at path `/ws`
 - Bind address configurable, default `0.0.0.0`.
 
-### Modules (planned)
+### Modules
 
 | Module | Responsibility |
 |---|---|
-| `ws.py` | RFC 6455 handshake, framing, masking, ping/close handling |
-| `http.py` | Minimal static file GET, path sanitising, `/ws` upgrade dispatch |
-| `protocol.py` | Binary encode/decode of messages, JSON control messages |
+| `wsproto.py` | RFC 6455 handshake, framing, masking, fragmentation, ping/pong/close handling |
+| `server.py` | asyncio listener: static HTTP GET, `/stats`, `/ws` upgrade; per-connection `Client` state, pad ownership, seq filtering, hello timeout, watchdog, tracing |
+| `protocol.py` | Binary encode/decode of messages, JSON hello/welcome |
 | `backends/` | `PadBackend` ABC, `vigem`, `mock` |
-| `session.py` | Per-connection state, pad ownership, seq filtering, watchdog |
 | `stats.py` | recv→apply histogram and counters; `GET /stats`, periodic and exit summary |
 | `__main__.py` | CLI |
 
 ### CLI
 
 ```
-python -m ghostpad [--port 47800] [--bind 0.0.0.0] [--backend vigem|mock]
-                   [--token SECRET] [--verbose]
+python -m ghostpad [--port 47800] [--bind 0.0.0.0] [--backend auto|vigem|mock]
+                   [--token SECRET] [--web-root DIR] [--verbose] [--trace]
 ```
 
-Default backend is `vigem` on Windows, `mock` elsewhere.
+| Flag | Meaning |
+|---|---|
+| `--backend` | `auto` (default): `vigem` on Windows (falls back to `mock` with a warning if `vgamepad` is missing), `mock` elsewhere. `vigem` / `mock` force one |
+| `--web-root` | Directory served for static files; default `client/web/` |
+| `--token` | See Security |
+| `--verbose` | DEBUG logging and a one-line stats summary every 30 s |
+| `--trace` | Log every pad connect / update / neutral / unplug and PAD_GONE at DEBUG (implies DEBUG level). Per-frame output, noisy; off by default and costs nothing on the hot path (a single boolean check, no string formatting) |
 
 ### PadBackend
 
@@ -139,6 +145,7 @@ Server reply:
 
 - Version mismatch: server closes with code **4000**.
 - Binary frames before `hello` are dropped.
+- A connection that completes the upgrade but sends no valid `hello` within **5 s** is closed with code **4003**. The deadline is absolute; junk frames do not extend it. Server parameter `hello_timeout` (default 5 s).
 
 ### Close codes
 
@@ -147,7 +154,8 @@ Server reply:
 | 1000 | Normal close |
 | 4000 | Protocol version mismatch |
 | 4001 | Taken over by a newer client |
-| 4002 | Bad or missing token (HTTP 401 is returned instead if it fails before upgrade) |
+| 4002 | Bad or missing token. Always sent after the 101 upgrade, never as an HTTP error |
+| 4003 | No valid `hello` within 5 s of the upgrade |
 
 ### Sequence handling
 
@@ -203,11 +211,16 @@ Controllers without `mapping === "standard"` are ignored by the v1 clients.
 
 ## Ownership and fail-safe
 
-- **One client owns the pads at a time.** A second client connecting takes over: the
-  old connection is closed with code 4001. Simplest model for a single user.
-- **Watchdog:** no frame of any kind from a client for **200 ms** sets all of that
-  client's pads to neutral (buttons 0, triggers 0, sticks 0). Pads stay plugged in.
-  The next STATE resumes normal operation.
+- **One client owns the pads at a time.** A second client that sends a valid `hello` takes
+  over: the old connection is closed with code 4001 and its pads are released. Connecting
+  alone, or a failed hello (bad version, bad token, timeout), does not displace the owner. Simplest model for a single user.
+- **Watchdog:** based on **input frames only**, STATE and PAD_GONE. PING/PONG and
+  WebSocket-level ping/pong do not count (PINGs are still answered). If the owning
+  client has at least one plugged pad and **200 ms** pass without an input frame, all of
+  its pads are set to neutral (buttons 0, triggers 0, sticks 0), once per stall (counted
+  in `watchdog_trips`). Pads stay plugged in. The next STATE resumes normal operation.
+  A client with no plugged pads is never tripped. This closes the gap where a client with
+  a stalled poll loop kept the link alive with PINGs while a button stayed held.
 - **Close:** on connection close, pads go neutral, then are unplugged.
 - **Shutdown:** the daemon neutralises and unplugs all pads on exit (SIGINT, SIGTERM).
 - Watchdog tick is 20 ms or finer, so worst-case release is about 220 ms. This meets
@@ -217,8 +230,9 @@ Controllers without `mapping === "standard"` are ignored by the v1 clients.
 ## Security
 
 - LAN only, no TLS, **no auth in v1**.
-- Optional `--token SECRET`: clients pass it as `?token=SECRET` on the `/ws` URL.
-  Compared in constant time. Without a token, anyone on the LAN can drive the pad.
+- Optional `--token SECRET`: clients pass it as `?token=SECRET` on the `/ws` URL and on
+  `GET /stats` (HTTP 403 otherwise). Compared in constant time. A bad `/ws` token is
+  always 101 then close 4002. Static files stay open. Without a token, anyone on the LAN can drive the pad.
 - Bind address configurable (`--bind`, default `0.0.0.0`). Use `127.0.0.1` for local
   testing.
 - Static serving is restricted to the `client/web/` tree; paths with `..` or absolute
@@ -255,8 +269,8 @@ Built in M3. Procedures and how to read the numbers: `docs/latency-testing.md`.
   is estimated as network RTT / 2. Rolling window of the last 240 samples (about 60 s):
   min / median / p95 / p99 / max (nearest rank: `sorted[min(n-1, floor(p*n))]`), jitter
   (mean absolute difference of consecutive RTTs), lost pings (no PONG within 1 s), server
-  proc median. PINGs are skipped when the poll loop has not ticked for 150 ms: the
-  watchdog counts any frame as liveness, so PINGs must not mask a stalled poll loop.
+  proc median. PINGs do not count as watchdog liveness (input frames only), so a stalled poll loop is
+  neutralised regardless of PINGs.
 - **HUD polling stats:** actual interval between `getGamepads()` polls (median / p99) and
   STATE packets sent in the last second. Colour grading uses one-way time: median
   <= 5 ms green, <= 10 ms amber, else red; p99 <= 16.7 ms green, <= 33.4 ms amber, else red.
@@ -264,7 +278,7 @@ Built in M3. Procedures and how to read the numbers: `docs/latency-testing.md`.
 - **Daemon stats (`stats.py`).** Counters are plain integer increments on the hot path;
   the recv->apply histogram is a bounded deque of the last 200 000 samples, sorted only
   when a snapshot is requested (copied on the loop thread, sorted in a worker).
-  - `GET /stats` returns JSON (also `HEAD`; unauthenticated like static files):
+  - `GET /stats` returns JSON (also `HEAD`; requires `?token=` when `--token` is set, otherwise open):
 
     ```json
     {"recv_apply":{"count":2501,"window":2501,"min_us":4.3,"median_us":10.4,"p95_us":18.2,
@@ -277,7 +291,7 @@ Built in M3. Procedures and how to read the numbers: `docs/latency-testing.md`.
     percentiles. Percentile fields are `null` until the first sample.
   - `frames_received`: binary frames from an active (post-hello) client. `stale_drops`:
     seq filter. `malformed_drops`: undecodable, unknown-type or bad-pad frames.
-    `prehello_drops`: binary before hello. `watchdog_trips`: 200 ms neutralisations.
+    `prehello_drops`: binary before hello. `watchdog_trips`: 200 ms input-silence neutralisations.
   - Logged as `exit stats: {json}` on shutdown, and as a one-line summary every 30 s with
     `--verbose`. Logs go to `logs/` (gitignored) when redirected there.
 - **`bench/bench.py` synthetic client** (stdlib only, own minimal WebSocket client).

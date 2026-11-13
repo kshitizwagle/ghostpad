@@ -43,6 +43,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--token", default=None, help="require ?token=SECRET on /ws")
     p.add_argument("--web-root", default=str(DEFAULT_WEB_ROOT))
     p.add_argument("--verbose", action="store_true")
+    p.add_argument("--trace", action="store_true",
+                   help="log every pad connect/update/neutral/unplug at DEBUG (noisy)")
     return p.parse_args(argv)
 
 
@@ -50,7 +52,7 @@ async def run(args: argparse.Namespace) -> None:
     backend = make_backend(args.backend)
     server = GhostpadServer(
         backend, host=args.bind, port=args.port, token=args.token, web_root=args.web_root,
-        stats=Stats(), stats_interval=30.0 if args.verbose else None,
+        stats=Stats(), stats_interval=30.0 if args.verbose else None, trace=args.trace,
     )
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -69,7 +71,7 @@ async def run(args: argparse.Namespace) -> None:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
+        level=logging.DEBUG if (args.verbose or args.trace) else logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     try:

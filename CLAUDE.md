@@ -21,23 +21,31 @@ drives the virtual pad via ViGEm. Input only; no streaming.
 ## Layout
 
 ```
-daemon/ghostpad/   Python package (server, protocol, backends, watchdog, CLI)
+daemon/ghostpad/   Python package (server.py, wsproto.py, protocol.py, stats.py, backends/, CLI)
 daemon/tests/      unittest suite, must run without Windows
 client/web/        browser test client, static, no build step
-client/tizen/      Tizen TV app (later)
-bench/             latency scripts
+client/web/tests/  node:test suite for the web client
+client/tizen/      Tizen TV app
+client/tizen/spike/  Tizen feasibility spike (M4)
+bench/             latency scripts and their tests
 docs/              procedures and findings
 ```
 
 ## Commands
 
 ```
-cd daemon && python -m unittest discover -s tests -v   # run tests
-python -m ghostpad --backend mock --verbose            # run locally (from daemon/)
+cd daemon && python3 -m unittest discover -s tests -v   # daemon tests
+python3 -m unittest discover -s bench                    # bench tests (from repo root)
+node --test "client/web/tests/*.test.mjs"                # web client tests (from repo root)
+python -m ghostpad --backend mock --verbose              # run locally (from daemon/)
+python -m ghostpad --backend mock --trace                # also log every pad op at DEBUG
 ```
 
-The `mock` backend needs no driver and works on any OS. The `vigem` backend needs
-Windows and ViGEmBus.
+`--backend` defaults to `auto` (`vigem` on Windows, otherwise `mock`). The `mock` backend
+needs no driver and works on any OS. The `vigem` backend needs Windows and ViGEmBus.
+`--web-root DIR` overrides the served static directory (default `client/web/`).
+With `--token`, both `/ws` and `GET /stats` require `?token=`; a bad `/ws` token is always
+101 then close 4002.
 
 ## Conventions
 
@@ -69,5 +77,6 @@ Windows and ViGEmBus.
   histogram, `bench/`, button-to-photon). Do not state latency figures from reasoning
   alone.
 - **Fail safe is a hard requirement:** a dropped link must never leave a button held.
-  Do not weaken the watchdog (200 ms) or the close-time neutral-then-unplug behaviour.
+  Do not weaken the watchdog (200 ms, driven by STATE/PAD_GONE only, never by PING or
+  WS ping/pong) or the close-time neutral-then-unplug behaviour.
 - Do not commit logs or benchmark output (`logs/`, `bench/results/`).
