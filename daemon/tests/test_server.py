@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 from ghostpad import protocol as p
+from ghostpad import server as server_mod
 from ghostpad.backends.mock import MockBackend
 from ghostpad.server import GhostpadServer
 from tests.wsclient import WSClient, build_frame, http_get
@@ -482,6 +483,52 @@ class StaticTests(ServerTestBase):
         raw = await r.read()
         self.assertIn(b" 400 ", raw.split(b"\r\n")[0])
         w.close()
+
+
+class ClientLogTests(ServerTestBase):
+    """{"type":"log"} text after hello -> INFO on the ghostpad.client logger."""
+
+    async def sync(self, c: WSClient) -> None:
+        """Frames are handled in order: once the PONG is back, earlier frames are done."""
+        await c.send_binary(p.encode_ping(1, 1.0))
+        op, data = await c.recv()
+        self.assertEqual(data[0], p.MSG_PONG)
+
+    async def test_logged_with_client_name(self):
+        c = await self.welcomed(name="tv")
+        with self.assertLogs("ghostpad.client", level="INFO") as cm:
+            await c.send_text(p.encode_client_log("gamepad connected: 0"))
+            await c.send_text(p.encode_client_log("line\nforged"))
+            await c.send_text('{"type":"other"}')  # ignored
+            await c.send_text("not json")  # ignored
+            await self.sync(c)
+        self.assertEqual([r.getMessage() for r in cm.records],
+                         ["tv: gamepad connected: 0", "tv: line\\nforged"])
+
+    async def test_rate_limited_then_reports_drops(self):
+        from unittest import mock
+        c = await self.welcomed(name="tv")
+        with self.assertLogs("ghostpad.client", level="INFO") as cm:
+            with mock.patch("ghostpad.server.CLIENT_LOG_RATE", 0.0):
+                for i in range(server_mod.CLIENT_LOG_BURST + 5):
+                    await c.send_text(p.encode_client_log(f"n{i}"))
+                await self.sync(c)
+            with mock.patch("ghostpad.server.CLIENT_LOG_RATE", 1e9):
+                await c.send_text(p.encode_client_log("after"))
+                await self.sync(c)
+        msgs = [r.getMessage() for r in cm.records]
+        self.assertEqual(len(msgs), server_mod.CLIENT_LOG_BURST + 2)
+        self.assertEqual(msgs[-2], "tv: 5 log lines dropped (rate limit)")
+        self.assertEqual(cm.records[-2].levelname, "WARNING")
+        self.assertEqual(msgs[-1], "tv: after")
+
+    async def test_before_hello_is_not_logged(self):
+        c = await self.connect(hello=False)
+        with self.assertLogs("ghostpad", level="INFO") as cm:
+            await c.send_text(p.encode_client_log("early"))
+            await self.settle()
+            __import__("logging").getLogger("ghostpad").info("marker")
+        self.assertFalse(any("early" in r.getMessage() for r in cm.records))
 
 
 class RumbleTests(ServerTestBase):
