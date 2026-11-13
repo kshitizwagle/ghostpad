@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ghostpad"
+version = "0.1.0"
+description = "Forward game controller input over the LAN to a virtual Xbox 360 pad"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+vigem = ["vgamepad; sys_platform == 'win32'"]
+
+[project.scripts]
+ghostpad = "ghostpad.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["ghostpad*"]
