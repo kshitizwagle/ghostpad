@@ -4,8 +4,10 @@ Goal: decide whether a sideloaded Tizen web app on the Samsung UA43U8500FRSHE (2
 can show the PC's HDMI input **inside the app** (so the app stays foreground and keeps
 reading the gamepad) without losing HDMI audio or Game Mode.
 
-**Status: code written, nothing has been run on a TV.** Every behaviour below marked
-UNVERIFIED must be confirmed with the checklist at the end.
+**Status: code written, nothing has been run on a TV.** Only the TVWindow API page could be
+read against primary docs (issue #10 pass, 2026-11-13); everything else marked UNVERIFIED
+could not be fetched (developer.samsung.com other pages, docs.tizen.org and GitHub were
+blocked by the sandbox/approval policy) and must be confirmed with the checklist at the end.
 
 App: `client/tizen/spike/` (`config.xml`, `index.html`, `main.js`, `style.css`,
 `protocol.js` copy, `icon.png` placeholder).
@@ -16,8 +18,8 @@ App: `client/tizen/spike/` (`config.xml`, `index.html`, `main.js`, `style.css`,
 |---|---|
 | Classic `<script>` files, no ES modules | Packaged apps load from `file://`-style origins, where module imports are the most likely thing to break and are not documented as supported for TV web apps; classic scripts are safe on any Tizen version. `protocol.js` is therefore a copy with `export` stripped and a `window.GhostpadProtocol` namespace |
 | ES2017-level syntax (`var`, no `?.`/`??`, no optional catch binding) | Target Chromium on Tizen 9 is new, but older sideload targets (and the Tizen Studio emulator) are not; costs nothing |
-| `required_version="6.0"` | Accepts any Tizen 6.0+ TV; the U8500F should be Tizen 9.0 (UNVERIFIED, check Settings > About TV) |
-| Transparent page, video `zPosition: "BEHIND"` first | Docs say the default (FRONT) window covers HTML; BEHIND (TVWindow 2.4+) is the only way to draw an overlay over gameplay |
+| `required_version="6.0"` | Accepts any Tizen 6.0+ TV; the U8500F should be Tizen 9.0 (UNVERIFIED, check Settings > About TV). Namespaces, id/package format (10-char package id), `tizen:profile`, `<access origin>`, CSP and `screen.size.all` are all UNVERIFIED (not fetched) |
+| Transparent page, video `zPosition: "BEHIND"` first | Verified: default `zPosition` is FRONT, `BEHIND` places the TV window behind the web app (since 2.4); BEHIND is the only way to draw an overlay over gameplay. Whether 2025 TVs honour it is UNVERIFIED |
 | `<access origin="*">` | Spike only; narrow to the PC IP in M5 |
 
 Regenerate `protocol.js` after protocol changes (from repo root; then re-add the header
@@ -38,9 +40,33 @@ sed -e 's/^export //' -e 's/} catch {/} catch (e) {/' client/web/protocol.js
 | Arrows + Enter | Pick HDMI source while the picker is visible (first HDMI auto-picked after 5 s) |
 | Back | Hide overlay; press again to exit |
 
-Info/colour keys are registered with `tizen.tvinputdevice.registerKey`. The key codes
-used (Info 457, Red 403, Green 404, Yellow 405, Blue 406, Back 10009) are from memory of
-Samsung conventions: UNVERIFIED. The app logs `getSupportedKeys()` at start; compare.
+Info/colour keys are registered with `tizen.tvinputdevice.registerKey(name)` using names
+`Info`, `ColorF0Red`, `ColorF1Green`, `ColorF2Yellow`, `ColorF3Blue`. Codes are resolved at
+runtime via `tizen.tvinputdevice.getKey(name).code`; hard-coded numbers (Info 457, Red 403,
+Green 404, Yellow 405, Blue 406, Back 10009) are only a fallback. UNVERIFIED (page not fetched):
+key names, `getKey`/`registerKey`/`getSupportedKeys` signatures, Back = 10009. The app logs
+`getSupportedKeys()` and any code that differs from the fallback; compare.
+
+Gamepad-as-Back: whether controller B also arrives as a Back key event is UNVERIFIED (not
+documented in anything read). The app defensively ignores a Back keydown while any gamepad
+button is held or was pressed within 400 ms, so B should not exit the app. Test: press B, see
+the log line "Back ignored".
+
+## TVWindow / VIDEOSOURCE facts (verified, TVWindow API page)
+
+| Item | Verified shape |
+|---|---|
+| `getPropertyValue("VIDEOSOURCE", cb)` | `cb(info)`; `info.connected` is an array of sources; Samsung's example loops it and matches `type === "HDMI"` and passes the entry straight to `setSource`. `disconnected` array, the `name` field and the full VideoSourceType enum are UNVERIFIED (systeminfo page not fetched); main.js logs the raw JSON |
+| `setSource(videoSource, successCb(source, type), errorCb?, type?)` | `type` only `"MAIN"` |
+| `show(successCb(rect, type), errorCb?, rectangle?, type?, zPosition?)` | `rectangle` = 4 strings `[x, y, w, h]`, each `px` or `%` (unitless = absolute), e.g. `["0","0px","50%","540px"]`; omitted = last rect or full screen; errors `InvalidValuesError`, `NotSupportedError`, `TypeMismatchError` |
+| `hide(successCb, errorCb?, type?)`, `getRect(successCb, errorCb?, unit?, type?)` | as written |
+| `getSource(type?)` | **synchronous**, returns `{type, number, ...}` |
+| `getVideoResolution(type?)` | **synchronous**, returns `{width, height, frequency, ...}` (the code previously used a callback: fixed). `aspectRatio` field name is UNVERIFIED |
+| `addVideoResolutionChangeListener(cb(res, type), type?)` / `remove...(id)` | The API is the resolution listener. **There is no `addVideoSourceChangeListener`** |
+| Privilege | `http://tizen.org/privilege/tv.window` (public) |
+| Support | "TV, HTV, Signage"; no model/firmware list. Check with `tizen.systeminfo.getCapability()`; PIP-dependent apps declare `http://tizen.org/feature/tv.pip` in config.xml (the spike does not, so it still installs; main.js logs the capability) |
+
+Source: https://developer.samsung.com/tv/develop/api-references/tizen-web-device-api-references/tvwindow-api
 
 ## Prerequisites
 
@@ -63,8 +89,7 @@ Samsung conventions: UNVERIFIED. The app logs `getSupportedKeys()` at start; com
    OK, then **power-cycle the TV** (hold power, not standby).
 4. Reopen Apps; a "Develop mode" banner shows. Port 26101 on the TV must be reachable from the PC.
 
-(Procedure from the Samsung docs/quick-start as I recall it; the doc page could not be re-fetched in
-this session, so UNVERIFIED for 2025 firmware. Menu paths differ slightly per One UI Tizen version.)
+(Procedure from memory; UNVERIFIED for 2025 firmware, doc page could not be fetched. Menu paths differ per Tizen version. Newer TVs may also require Samsung-account login or only accept certificates created via Tizen Studio Certificate Manager: UNVERIFIED.)
 
 ## 2. Certificates (never commit them)
 
@@ -107,7 +132,7 @@ tizen install -n GhostpadSpike.wgt -t <target-name-from-sdb-devices>
 tizen run -p GhstPadSpk.Spike -t <target-name>
 ```
 
-The CLI flags above are from memory of the Tizen CLI reference and UNVERIFIED; run
+The CLI flags above are from memory and UNVERIFIED (not fetched this pass); run
 `tizen help package` / `tizen help certificate` if a flag is rejected. The package output
 folder/name may differ. If `tizen package` leaves `author-signature.xml`/`signature1.xml`
 in the project dir they are git-ignored; do not commit them.
@@ -200,10 +225,14 @@ Fetched and read in this session:
   privilege only for volume control)
 - Search result titles also seen, not read: https://developer.samsung.com/tv/develop/getting-started/quick-start-guide
 
-**Not retrieved** (fetching stopped when the tool requested approval nobody answered). The following are from memory and
-UNVERIFIED, re-check them before relying on them: the `SystemInfoVideoSourceInfo` field list (`type`, `number`, `name`),
-`tizen.tvinputdevice` key names/codes, the Gamepad guide, config.xml/Tizen 9 specifics, multitasking behaviour, Developer
-Mode menu paths, certificate/DUID procedure and CLI flags. Start from:
+**Not retrieved** (WebFetch needed approval nobody answered; curl to developer.samsung.com, docs.tizen.org and
+raw.githubusercontent.com was refused by the egress proxy; WebSearch returns titles only). The following are from memory and
+UNVERIFIED: `SystemInfoVideoSourceInfo` fields and VideoSourceType enum, `tizen.tvinputdevice` names/codes/signatures
+(candidate: https://developer.samsung.com/tv/develop/api-references/tizen-web-device-api-references/tvinputdevice-api/),
+Gamepad API behaviour on Samsung TVs (`getGamepads`, `mapping`), config.xml/Tizen 9 specifics (CSP, `tizen:allow-navigation`),
+classic scripts vs ES modules and the Chromium version per model year, sideloading steps and certificate lifetime, community
+installers (e.g. Apps2Samsung, Samsung-Jellyfin-Installer; jellyfin-tizen / moonlight-tizen READMEs), tvwindow support on
+2024/2025 models, Game Mode/ALLM/audio with in-app HDMI, multitasking/suspend. Start from:
 
 - https://developer.samsung.com/smarttv/develop/api-references/tizen-web-device-api-references/systeminfo-api.html
 - https://developer.samsung.com/smarttv/develop/guides/user-interaction/remote-control.html

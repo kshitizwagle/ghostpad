@@ -77,6 +77,9 @@
       ['tizen.tvwindow', 'tizen.systeminfo', 'tizen.tvinputdevice'].forEach(function (n) { step(n, 'FAIL', 'no tizen object'); });
       return false;
     }
+    try {
+      if (tizen.systeminfo && tizen.systeminfo.getCapability) log('capability tv.pip=' + tizen.systeminfo.getCapability('http://tizen.org/feature/tv.pip'));
+    } catch (e) { log('getCapability(tv.pip) threw ' + errStr(e)); }
     var okWin = !!(tizen.tvwindow && typeof tizen.tvwindow.show === 'function');
     step('tizen.tvwindow', okWin ? 'OK' : 'FAIL', okWin ? '' : 'API missing (optional on some TVs, or privilege not granted)');
     var okSys = !!(tizen.systeminfo && typeof tizen.systeminfo.getPropertyValue === 'function');
@@ -87,11 +90,27 @@
   }
 
   // ---- Remote keys ---------------------------------------------------------------------
-  // keyCodes per Samsung TV docs/convention: Info 457, ColorF0Red 403, F1Green 404,
-  // F2Yellow 405, F3Blue 406, Back 10009. (UNVERIFIED on the target TV: check the logged
-  // getSupportedKeys() output.) Keyboard fallbacks i/g/y/b/r help when testing in a desktop browser.
+  // Key codes are looked up at runtime with tizen.tvinputdevice.getKey(name).code (and the
+  // getSupportedKeys() list is logged) instead of trusting hard-coded numbers. The numbers below
+  // are only the fallback when getKey is unavailable (desktop browser) or throws; they are from
+  // memory and UNVERIFIED. Back (10009) is delivered without registration. Keyboard fallbacks
+  // i/g/y/b/r help when testing in a desktop browser.
   var KEY = { INFO: 457, RED: 403, GREEN: 404, YELLOW: 405, BLUE: 406, BACK: 10009,
     ENTER: 13, LEFT: 37, UP: 38, RIGHT: 39, DOWN: 40 };
+  var KEY_NAMES = { INFO: 'Info', RED: 'ColorF0Red', GREEN: 'ColorF1Green', YELLOW: 'ColorF2Yellow', BLUE: 'ColorF3Blue' };
+
+  function resolveKeyCodes() {
+    if (!(hasTizen && tizen.tvinputdevice && typeof tizen.tvinputdevice.getKey === 'function')) return;
+    Object.keys(KEY_NAMES).forEach(function (id) {
+      try {
+        var k = tizen.tvinputdevice.getKey(KEY_NAMES[id]);
+        if (k && typeof k.code === 'number') {
+          if (k.code !== KEY[id]) log('key ' + KEY_NAMES[id] + ': getKey code ' + k.code + ' differs from fallback ' + KEY[id]);
+          KEY[id] = k.code;
+        } else { log('getKey(' + KEY_NAMES[id] + ') returned no code; using fallback ' + KEY[id]); }
+      } catch (e) { log('getKey(' + KEY_NAMES[id] + ') threw ' + errStr(e) + '; using fallback ' + KEY[id]); }
+    });
+  }
 
   function registerKeys() {
     if (!(hasTizen && tizen.tvinputdevice)) return;
@@ -99,10 +118,29 @@
       var supported = tizen.tvinputdevice.getSupportedKeys();
       log('supported keys: ' + supported.map(function (k) { return k.name + '=' + k.code; }).join(' '));
     } catch (e) { log('getSupportedKeys threw ' + errStr(e)); }
-    ['Info', 'ColorF0Red', 'ColorF1Green', 'ColorF2Yellow', 'ColorF3Blue'].forEach(function (name) {
-      try { tizen.tvinputdevice.registerKey(name); log('registerKey ' + name + ' ok'); }
+    resolveKeyCodes();
+    Object.keys(KEY_NAMES).forEach(function (id) {
+      var name = KEY_NAMES[id];
+      try { tizen.tvinputdevice.registerKey(name); log('registerKey ' + name + ' ok (code ' + KEY[id] + ')'); }
       catch (e) { log('registerKey ' + name + ' failed: ' + errStr(e)); }
     });
+  }
+
+  // Gamepad B may also be delivered by the TV as a Back key event (UNVERIFIED whether it happens on
+  // the U8500F; not documented). Ignore a Back keydown if any gamepad button is held or was pressed
+  // within GP_BACK_GUARD_MS, so pressing B on the controller cannot close the app.
+  var GP_BACK_GUARD_MS = 400;
+  var lastPadButtonAt = 0;
+  function padButtonRecent() {
+    var pads = getPads(), now = Date.now();
+    if (pads) {
+      for (var i = 0; i < pads.length; i++) {
+        var g = pads[i];
+        if (!g) continue;
+        for (var j = 0; j < g.buttons.length; j++) if (g.buttons[j].pressed) { lastPadButtonAt = now; break; }
+      }
+    }
+    return now - lastPadButtonAt < GP_BACK_GUARD_MS;
   }
 
   window.addEventListener('keydown', function (ev) {
@@ -122,6 +160,8 @@
     } else if (k === KEY.RED || ev.key === 'r') {
       start(); ev.preventDefault();
     } else if (k === KEY.BACK) {
+      ev.preventDefault();
+      if (padButtonRecent()) { log('Back ignored: gamepad button active (controller B as Back?)'); return; }
       if (overlayMode !== 0) { overlayMode = 0; applyOverlayMode(); }
       else { try { tizen.application.getCurrentApplication().exit(); } catch (e) { log('exit failed ' + errStr(e)); } }
     }
@@ -137,14 +177,16 @@
     try {
       tizen.systeminfo.getPropertyValue('VIDEOSOURCE', function (info) {
         allSourcesRaw = info;
-        // Documented shape: info.connected is an array of {type, number, name}; the PiP guide
-        // iterates `connected` and looks for type HDMI. `disconnected` is logged for reference.
+        // Shape: info.connected is an array of source objects; the Samsung TVWindow example
+        // iterates `connected` and compares type === "HDMI" (verified). `disconnected` and the
+        // per-source fields beyond type/number (name) are not verified; raw JSON is logged.
         var conn = (info && info.connected) || [];
+        try { log('VIDEOSOURCE raw: ' + JSON.stringify(info)); } catch (e) { /* ignore */ }
         sources = [];
         for (var i = 0; i < conn.length; i++) sources.push(conn[i]);
         log('VIDEOSOURCE connected=' + sources.length + ' disconnected=' + ((info && info.disconnected) || []).length);
         step('VIDEOSOURCE read', 'OK', sources.length + ' connected');
-        var hdmi = sources.filter(function (s) { return String(s.type).toUpperCase().indexOf('HDMI') === 0; });
+        var hdmi = sources.filter(function (s) { return String(s.type).toUpperCase() === 'HDMI'; });
         if (!hdmi.length) {
           step('HDMI source found', 'FAIL', 'no connected HDMI source (is the PC on, cable in, source not "disconnected"?)');
           return;
@@ -169,7 +211,7 @@
   function pickSource(src) {
     pickerActive = false; cancelAutoPick();
     chosenSource = src;
-    log('picked ' + src.type + ' ' + src.number + ' (' + src.name + ')');
+    log('picked ' + src.type + ' ' + src.number + ' (' + (src.name || '-') + ')');
     try {
       // setSource(videoSource, successCallback, errorCallback, type)
       tizen.tvwindow.setSource(src, function (s, windowType) {
@@ -193,6 +235,7 @@
         if (z === 'BEHIND') log('If the screen is black/no video here, z-order BEHIND is not honoured: press Yellow for FRONT.');
         else log('FRONT: video covers the web layer, overlay will be hidden behind it (expected).');
         checkResolution();
+        if (!resListening) { resListening = true; listenResolution(); }
       }, function (e) {
         step(name, 'FAIL', 'error callback: ' + errStr(e));
         if (z === 'BEHIND') { log('falling back to FRONT'); showVideo('FRONT'); }
@@ -220,17 +263,29 @@
     } catch (e) { log('toggleVideo threw ' + errStr(e)); }
   }
 
-  // Resolution/refresh reported by the TV for the shown source (TVWindow 2.4+, optional).
+  // Resolution/refresh reported by the TV for the shown source. getVideoResolution is synchronous
+  // and returns {width, height, frequency, ...} (Samsung TVWindow API, since 2.4); there is no callback form.
   var resInfo = 'n/a';
   function checkResolution() {
     try {
       if (typeof tizen.tvwindow.getVideoResolution !== 'function') return;
-      tizen.tvwindow.getVideoResolution(function (r) {
-        resInfo = r.width + 'x' + r.height + '@' + r.frequency + 'Hz ar=' + r.aspectRatio;
-        log('video resolution: ' + resInfo);
-      }, function (e) { log('getVideoResolution failed ' + errStr(e)); }, 'MAIN');
+      var r = tizen.tvwindow.getVideoResolution('MAIN');
+      resInfo = r.width + 'x' + r.height + '@' + r.frequency + 'Hz' + (r.aspectRatio ? ' ar=' + r.aspectRatio : '');
+      log('video resolution: ' + resInfo + ' raw=' + JSON.stringify(r));
     } catch (e) { log('getVideoResolution threw ' + errStr(e)); }
   }
+  // Re-read when the TV reports a resolution change (API is addVideoResolutionChangeListener;
+  // there is no addVideoSourceChangeListener).
+  function listenResolution() {
+    try {
+      if (typeof tizen.tvwindow.addVideoResolutionChangeListener !== 'function') return;
+      tizen.tvwindow.addVideoResolutionChangeListener(function (r) {
+        resInfo = r.width + 'x' + r.height + '@' + r.frequency + 'Hz';
+        log('video resolution changed: ' + resInfo);
+      }, 'MAIN');
+    } catch (e) { log('addVideoResolutionChangeListener threw ' + errStr(e)); }
+  }
+  var resListening = false;
 
   // ---- Page visibility ------------------------------------------------------------------
   document.addEventListener('visibilitychange', function () {
@@ -283,7 +338,9 @@
       var g = pads[i];
       if (!g) continue;
       var sig = '', j;
-      for (j = 0; j < g.buttons.length; j++) sig += g.buttons[j].pressed ? '1' : '0';
+      var anyBtn = false;
+      for (j = 0; j < g.buttons.length; j++) { sig += g.buttons[j].pressed ? '1' : '0'; if (g.buttons[j].pressed) anyBtn = true; }
+      if (anyBtn) lastPadButtonAt = Date.now();
       for (j = 0; j < g.axes.length; j++) sig += ',' + g.axes[j].toFixed(2);
       if (lastSig[i] !== sig || lastGpTs[i] !== g.timestamp) {
         if (lastSig[i] !== sig) lastInputNote = 'pad' + i + ' changed at ' + ts() + ' (hidden=' + document.hidden + ')';
@@ -396,9 +453,9 @@
     var src = '';
     if (pickerActive) {
       src += 'Pick HDMI source (arrows + Enter), first HDMI auto-picked in ' + (autoPickTimer ? Math.max(0, Math.ceil((pickDeadline - Date.now()) / 1000)) + 's' : 'cancelled') + '\n';
-      for (i = 0; i < sources.length; i++) src += (i === pickIndex ? ' > ' : '   ') + sources[i].type + ' #' + sources[i].number + '  ' + sources[i].name + '\n';
+      for (i = 0; i < sources.length; i++) src += (i === pickIndex ? ' > ' : '   ') + sources[i].type + ' #' + sources[i].number + '  ' + (sources[i].name || '') + '\n';
     } else if (chosenSource) {
-      src += 'chosen: ' + chosenSource.type + ' #' + chosenSource.number + ' ' + chosenSource.name + '\n';
+      src += 'chosen: ' + chosenSource.type + ' #' + chosenSource.number + ' ' + (chosenSource.name || '') + '\n';
     }
     src += 'resolution: ' + resInfo + '\n';
     els.sources.textContent = src;
