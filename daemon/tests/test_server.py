@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 from ghostpad import protocol as p
+from ghostpad import server as server_mod
 from ghostpad.backends.mock import MockBackend
 from ghostpad.server import GhostpadServer
 from tests.wsclient import WSClient, build_frame, http_get
@@ -484,6 +485,51 @@ class StaticTests(ServerTestBase):
         w.close()
 
 
+class ProbeTests(ServerTestBase):
+    """Pre-hello {"type":"probe"} -> {"type":"status","owner":...}; never takes the pads."""
+
+    async def probe(self, c: WSClient) -> dict:
+        await c.send_text(p.encode_probe())
+        op, data = await c.recv()
+        msg = json.loads(data)
+        self.assertEqual((msg["type"], msg["version"]), ("status", 1))
+        return msg
+
+    async def test_free_pads_then_hello_on_same_connection(self):
+        c = await self.connect(hello=False)
+        self.assertIsNone((await self.probe(c))["owner"])
+        await c.send_text(p.encode_hello("tv"))
+        op, data = await c.recv()
+        self.assertEqual(json.loads(data)["type"], "welcome")
+        self.assertEqual(self.server.status()["client"], "tv")
+
+    async def test_busy_pads_reported_and_owner_kept(self):
+        owner = await self.welcomed(name="web")
+        await owner.send_binary(p.encode_state(0, 1, S1))
+        c = await self.connect(hello=False)
+        self.assertEqual((await self.probe(c))["owner"], "web")
+        self.assertEqual((await self.probe(c))["owner"], "web")  # may ask again
+        await c.send_close()
+        await self.settle()
+        st = self.server.status()
+        self.assertEqual((st["client"], st["pads"]), ("web", [0]))
+        self.assertEqual(self.server.dropped, 0)  # probes are not junk
+
+    async def test_owner_leaving_frees_pads(self):
+        owner = await self.welcomed(name="web")
+        await owner.send_close()
+        await self.settle()
+        c = await self.connect(hello=False)
+        self.assertIsNone((await self.probe(c))["owner"])
+
+    async def test_probe_after_hello_is_ignored(self):
+        c = await self.welcomed(name="tv")
+        await c.send_text(p.encode_probe())
+        await c.send_binary(p.encode_ping(5, 1.0))
+        op, data = await c.recv()
+        self.assertEqual(data[0], p.MSG_PONG)  # no status reply in between
+
+
 class DisconnectLogTests(ServerTestBase):
     async def test_owner_disconnect_logged_once(self):
         with self.assertLogs("ghostpad.server", level="INFO") as cm:
@@ -524,6 +570,52 @@ class ExceptionHandlerTests(unittest.TestCase):
             self.assertIs(loop.get_exception_handler(), mine)
             await s.stop()
         asyncio.run(check())
+
+
+class ClientLogTests(ServerTestBase):
+    """{"type":"log"} text after hello -> INFO on the ghostpad.client logger."""
+
+    async def sync(self, c: WSClient) -> None:
+        """Frames are handled in order: once the PONG is back, earlier frames are done."""
+        await c.send_binary(p.encode_ping(1, 1.0))
+        op, data = await c.recv()
+        self.assertEqual(data[0], p.MSG_PONG)
+
+    async def test_logged_with_client_name(self):
+        c = await self.welcomed(name="tv")
+        with self.assertLogs("ghostpad.client", level="INFO") as cm:
+            await c.send_text(p.encode_client_log("gamepad connected: 0"))
+            await c.send_text(p.encode_client_log("line\nforged"))
+            await c.send_text('{"type":"other"}')  # ignored
+            await c.send_text("not json")  # ignored
+            await self.sync(c)
+        self.assertEqual([r.getMessage() for r in cm.records],
+                         ["tv: gamepad connected: 0", "tv: line\\nforged"])
+
+    async def test_rate_limited_then_reports_drops(self):
+        from unittest import mock
+        c = await self.welcomed(name="tv")
+        with self.assertLogs("ghostpad.client", level="INFO") as cm:
+            with mock.patch("ghostpad.server.CLIENT_LOG_RATE", 0.0):
+                for i in range(server_mod.CLIENT_LOG_BURST + 5):
+                    await c.send_text(p.encode_client_log(f"n{i}"))
+                await self.sync(c)
+            with mock.patch("ghostpad.server.CLIENT_LOG_RATE", 1e9):
+                await c.send_text(p.encode_client_log("after"))
+                await self.sync(c)
+        msgs = [r.getMessage() for r in cm.records]
+        self.assertEqual(len(msgs), server_mod.CLIENT_LOG_BURST + 2)
+        self.assertEqual(msgs[-2], "tv: 5 log lines dropped (rate limit)")
+        self.assertEqual(cm.records[-2].levelname, "WARNING")
+        self.assertEqual(msgs[-1], "tv: after")
+
+    async def test_before_hello_is_not_logged(self):
+        c = await self.connect(hello=False)
+        with self.assertLogs("ghostpad", level="INFO") as cm:
+            await c.send_text(p.encode_client_log("early"))
+            await self.settle()
+            __import__("logging").getLogger("ghostpad").info("marker")
+        self.assertFalse(any("early" in r.getMessage() for r in cm.records))
 
 
 class RumbleTests(ServerTestBase):

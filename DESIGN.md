@@ -171,13 +171,41 @@ Server reply:
 - Binary frames before `hello` are dropped.
 - A connection that completes the upgrade but sends no valid `hello` within **5 s** is closed with code **4003**. The deadline is absolute; junk frames do not extend it. Server parameter `hello_timeout` (default 5 s).
 
+Ownership probe (optional, before `hello`; used by automatic reconnects, see "Reconnecting"):
+
+```json
+{"type":"probe"}
+{"type":"status","version":1,"owner":"<client name>"|null}
+```
+
+- The server answers every probe with the current owner's `client` name, or `null` when no
+  client owns the pads. A probe never changes ownership; the client may send `hello` on the
+  same connection afterwards, or close it. The 5 s `hello` deadline still applies.
+- Answered only before `hello` (after `hello` it is ignored). With `--token`, the token is
+  checked first (4002), so the owner's name is not shown to a client without the token.
+- Additive: older v1 daemons drop the probe like any pre-hello junk; clients then send
+  `hello` after a 1.5 s timeout.
+
+Client diagnostic line (optional, after `hello`; for clients without a usable console, e.g. the TV):
+
+```json
+{"type":"log","msg":"<text>"}
+```
+
+- Logged at INFO by the `ghostpad.client` logger as `<client name>: <text>`.
+- `msg` is truncated to 500 chars; non-printable chars (newlines included) are escaped.
+- Rate limit per connection: burst 50, then 20 lines/s. Excess lines are dropped and
+  counted; the count is logged as a WARNING before the next accepted line.
+- Other text after `hello` is ignored. Additive: v1 daemons before this ignore it too, so
+  the version is unchanged.
+
 ### Close codes
 
 | Code | Meaning |
 |---|---|
 | 1000 | Normal close |
 | 4000 | Protocol version mismatch |
-| 4001 | Taken over by a newer client |
+| 4001 | Taken over by a newer client. Final for the client, unless auto-connect is on: then it waits for free pads ("Reconnecting") |
 | 4002 | Bad or missing token. Always sent after the 101 upgrade, never as an HTTP error |
 | 4003 | No valid `hello` within 5 s of the upgrade |
 
@@ -233,11 +261,34 @@ Controllers without `mapping === "standard"` are ignored by the v1 clients.
   server unplugs that virtual pad.
 - On (re)connect, the client sends `hello`, then a full STATE for each pad present.
 
+### Reconnecting
+
+Rule: **a user action takes the pads; an automatic connect never takes them from another
+client.** Implemented in `client/web/transport.js` and the Tizen spike.
+
+| Mode | When | Before `hello` |
+|---|---|---|
+| takeover | User action: Connect button, launching the TV app | Nothing: `hello` at once (takes over, 4001 to the old owner) |
+| reconnect | After a drop (network, daemon restart) | Probe; `hello` only if `owner` is `null`, else close and ask again in 3 s |
+| resume | Page load with auto-connect on; after a 4001 with auto-connect on | As reconnect, and only while a controller is present (checked every 1 s) |
+
+- Retry delays: after a drop, 0.5 s doubling to 5 s (web) or 2 s fixed (spike); while
+  another client owns the pads, 3 s.
+- Auto-connect (default on; web: "Auto-connect" checkbox, spike: `autoConnect`): off means
+  no connect on page load and a 4001 is final, as before.
+- Remembered PC: the web client keeps host and token in `localStorage` (set on Connect);
+  the spike stores the last PC that sent `welcome` and uses it when none is configured.
+- No ping-pong: two auto-connecting clients never take the pads from each other; only a
+  user action does. The controller requirement for resume keeps an idle browser tab
+  without a pad from grabbing the pads when the TV drops for a moment.
+- Ownership on the daemon is unchanged: newest `hello` wins.
+
 ## Ownership and fail-safe
 
 - **One client owns the pads at a time.** A second client that sends a valid `hello` takes
   over: the old connection is closed with code 4001 and its pads are released. Connecting
-  alone, or a failed hello (bad version, bad token, timeout), does not displace the owner. Simplest model for a single user.
+  alone, a probe, or a failed hello (bad version, bad token, timeout), does not displace the owner. Simplest model for a single user.
+  Clients only send `hello` over another owner on a user action ("Reconnecting").
 - **Watchdog:** based on **input frames only**, STATE and PAD_GONE. PING/PONG and
   WebSocket-level ping/pong do not count (PINGs are still answered). If the owning
   client has at least one plugged pad and **200 ms** pass without an input frame, all of

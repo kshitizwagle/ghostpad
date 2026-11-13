@@ -3,21 +3,31 @@
 //
 // Flow: detect APIs -> list VIDEOSOURCE -> pick HDMI -> tvwindow.setSource -> tvwindow.show
 // (z-order BEHIND, fallback FRONT) -> overlay with gamepad/rAF/visibility readouts ->
-// optional WebSocket smoke test to the daemon.
+// optional WebSocket smoke test to the daemon. With the WebSocket up, every log line and a
+// status line every 5 s are also sent to the daemon ({"type":"log"}), so results can be read
+// in the daemon log on the PC without a web inspector.
 (function () {
   'use strict';
 
   // ---- Config -------------------------------------------------------------------------
-  // Set to the PC's LAN IP (e.g. '192.168.1.50') to enable the WebSocket smoke test.
-  // Empty string = disabled. Can also be set at runtime from the web inspector console:
-  //   setPcHost('192.168.1.50')   (persisted in localStorage)
-  var PC_HOST = '';
-  var PC_PORT = 47800;
-  var PC_TOKEN = '';              // only if the daemon runs with --token
+  // PC address for the WebSocket smoke test, from local-config.js (written into the package by
+  // client/tizen/package_spike.py --pc-host). Empty host = disabled. Can also be set at runtime
+  // from the web inspector console: setPcHost('192.168.1.50') (persisted in localStorage,
+  // which then wins over local-config.js).
+  var CFG = window.GHOSTPAD_SPIKE_CONFIG || {};
+  var PC_HOST = CFG.pcHost || '';
+  var PC_PORT = CFG.pcPort || 47800;
+  var PC_TOKEN = CFG.token || '';  // only if the daemon runs with --token
+  // After being taken over by another client, reconnect once it leaves (never steal back).
+  var AUTO_CONNECT = CFG.autoConnect !== false;
+  var LAST_PC_KEY = 'ghostpad.spike.lastPc';  // last PC that sent welcome: used when none is configured
   var AUTO_PICK_MS = 5000;        // auto-pick first connected HDMI after this long without input
   var FULLSCREEN_RECT = ['0', '0', '1920px', '1080px']; // show(): x, y, w, h as strings
   var SEND_HEARTBEAT_MS = 50;     // DESIGN.md send policy
   var PING_MS = 250;
+  var STATUS_MS = 5000;           // status line to the daemon log
+  var REMOTE_LOG_MAX = 300;       // queued lines kept while the WebSocket is down
+  var REMOTE_LOG_PER_TICK = 3;    // per PING_MS tick: 12 lines/s, under the daemon's 20/s limit
 
   var P = window.GhostpadProtocol;
   var hasTizen = typeof window.tizen !== 'undefined';
@@ -36,6 +46,19 @@
     try { console.log('[spike] ' + line); } catch (e) { /* ignore */ }
     logLines.push(line);
     if (logLines.length > 14) logLines.shift();
+    remote(line);
+  }
+
+  // Lines for the daemon log; drained by the PING timer once the daemon has welcomed us.
+  var remoteQueue = [], remoteDropped = 0;
+  function remote(line) {
+    remoteQueue.push(line);
+    if (remoteQueue.length > REMOTE_LOG_MAX) { remoteQueue.shift(); remoteDropped++; }
+  }
+  function drainRemote() {
+    if (!ws || ws.readyState !== 1) return;
+    if (remoteDropped) { ws.send(P.encodeLog('(' + remoteDropped + ' earlier lines dropped)')); remoteDropped = 0; }
+    for (var i = 0; i < REMOTE_LOG_PER_TICK && remoteQueue.length; i++) ws.send(P.encodeLog(remoteQueue.shift()));
   }
 
   // Step results: name -> {status: 'PENDING'|'OK'|'FAIL'|'SKIP', detail}
@@ -151,7 +174,9 @@
       if (k === KEY.DOWN || k === KEY.RIGHT) { pickIndex = (pickIndex + 1) % sources.length; cancelAutoPick(); ev.preventDefault(); return; }
       if (k === KEY.ENTER) { cancelAutoPick(); pickSource(sources[pickIndex]); ev.preventDefault(); return; }
     }
-    if (k === KEY.INFO || k === KEY.GREEN || ev.key === 'i' || ev.key === 'g') {
+    // Enter (remote OK) too: the Samsung Smart Remote has no Info or colour keys. Controller
+    // buttons do not arrive as key events on the U8500F (verified), so A cannot trigger this.
+    if (k === KEY.INFO || k === KEY.GREEN || k === KEY.ENTER || ev.key === 'i' || ev.key === 'g') {
       overlayMode = (overlayMode + 1) % 3; applyOverlayMode(); ev.preventDefault();
     } else if (k === KEY.YELLOW || ev.key === 'y') {
       toggleZ(); ev.preventDefault();
@@ -331,7 +356,7 @@
   }
 
   // Detect "input is arriving": g.timestamp changes, or any button/axis differs from last poll.
-  var lastSig = {};
+  var lastSig = {}, lastBtns = {};
   function trackInput(pads) {
     if (!pads) return;
     for (var i = 0; i < pads.length; i++) {
@@ -341,6 +366,13 @@
       var anyBtn = false;
       for (j = 0; j < g.buttons.length; j++) { sig += g.buttons[j].pressed ? '1' : '0'; if (g.buttons[j].pressed) anyBtn = true; }
       if (anyBtn) lastPadButtonAt = Date.now();
+      var btns = sig;
+      if (lastBtns[i] !== undefined && lastBtns[i] !== btns) {
+        var down = [];
+        for (j = 0; j < btns.length; j++) if (btns.charAt(j) === '1') down.push(j);
+        log('pad' + i + ' buttons=[' + down.join(',') + '] hidden=' + document.hidden + ' video=' + (videoShown ? zPos : 'off'));
+      }
+      lastBtns[i] = btns;
       for (j = 0; j < g.axes.length; j++) sig += ',' + g.axes[j].toFixed(2);
       if (lastSig[i] !== sig || lastGpTs[i] !== g.timestamp) {
         if (lastSig[i] !== sig) lastInputNote = 'pad' + i + ' changed at ' + ts() + ' (hidden=' + document.hidden + ')';
@@ -365,26 +397,73 @@
   window.setPcHost = function (host, token) {
     try { localStorage.setItem('ghostpad.spike.host', host || ''); if (token !== undefined) localStorage.setItem('ghostpad.spike.token', token); } catch (e) { /* ignore */ }
     PC_HOST = host || ''; if (token !== undefined) PC_TOKEN = token;
-    wsStop(); wsStart();
+    wsStop(); wsStart('takeover');
   };
 
-  function wsStart() {
+  // Connect modes (DESIGN.md "Reconnecting"), same as client/web/transport.js:
+  //  takeover   app launch / setPcHost: hello at once, takes the pads from any owner.
+  //  reconnect  after a drop: probe first, hello only if no client owns the pads.
+  //  resume     after a takeover (4001) with autoConnect: like reconnect, and only with a pad.
+  var wsMode = 'takeover', probeTimer = null;
+  var BUSY_MS = 3000, PROBE_TIMEOUT_MS = 1500, RETRY_MS = 2000;
+
+  function hasPad() {
+    var pads = getPads();
+    if (pads) for (var i = 0; i < pads.length; i++) if (pads[i]) return true;
+    return false;
+  }
+
+  function rememberPc() {
+    try { localStorage.setItem(LAST_PC_KEY, JSON.stringify({ host: PC_HOST, port: PC_PORT, token: PC_TOKEN })); } catch (e) { /* ignore */ }
+  }
+
+  function wsStart(mode) {
     wsStop();
+    wsMode = mode || 'takeover';
     if (!PC_HOST) { wsState = 'disabled'; wsInfo = 'PC_HOST empty (set in main.js or setPcHost("ip") in the inspector)'; return; }
-    wsState = 'connecting'; wsInfo = wsUrl();
-    log('ws connecting ' + wsUrl());
-    try { ws = new WebSocket(wsUrl()); } catch (e) { wsState = 'error'; wsInfo = 'ctor threw ' + errStr(e); log(wsInfo); scheduleReconnect(); return; }
+    if (wsMode === 'resume' && !hasPad()) {
+      wsState = 'waiting'; wsInfo = 'waiting for a controller before reconnecting';
+      scheduleReconnect('resume', 1000);
+      return;
+    }
+    wsState = 'connecting (' + wsMode + ')'; wsInfo = wsUrl();
+    log('ws connecting ' + wsUrl() + ' (' + wsMode + ')');
+    try { ws = new WebSocket(wsUrl()); } catch (e) { wsState = 'error'; wsInfo = 'ctor threw ' + errStr(e); log(wsInfo); scheduleReconnect(wsMode, RETRY_MS); return; }
     ws.binaryType = 'arraybuffer';
-    ws.onopen = function () {
+    var sock = ws;
+    function sendHello() {
+      if (probeTimer) { clearTimeout(probeTimer); probeTimer = null; }
       wsState = 'open (hello sent)';
-      ws.send(P.encodeHello('tizen-spike'));
-      log('ws open, hello sent');
+      sock.send(P.encodeHello('tizen-spike'));
+      log('ws hello sent');
+    }
+    ws.onopen = function () {
+      if (wsMode === 'takeover') { sendHello(); return; }
+      wsState = 'open (probe sent)';
+      sock.send(P.encodeProbe());
+      // A daemon without probe support never answers: fall back to hello.
+      probeTimer = setTimeout(function () { probeTimer = null; if (ws === sock) { log('no status reply (older daemon?), sending hello'); sendHello(); } }, PROBE_TIMEOUT_MS);
     };
     ws.onmessage = function (ev) {
       if (typeof ev.data === 'string') {
         var c = P.parseControl(ev.data);
         log('ws text: ' + ev.data);
-        if (c && c.type === 'welcome') { wsState = 'welcome (backend=' + c.backend + ')'; wsReady(); }
+        if (c && c.type === 'status' && probeTimer) {
+          if (c.owner == null) { sendHello(); return; }
+          clearTimeout(probeTimer); probeTimer = null;
+          wsState = 'waiting (pads in use by ' + c.owner + ')'; wsInfo = 'retry in ' + BUSY_MS / 1000 + ' s';
+          log('pads in use by "' + c.owner + '", asking again in ' + BUSY_MS / 1000 + ' s');
+          sock.onclose = null; try { sock.close(1000); } catch (e) { /* ignore */ }
+          ws = null;
+          scheduleReconnect(wsMode, BUSY_MS);
+          return;
+        }
+        if (c && c.type === 'welcome') {
+          wsState = 'welcome (backend=' + c.backend + ')';
+          wsMode = 'reconnect';  // from now on, automatic reconnects ask first
+          rememberPc();
+          wsReady();
+        }
         return;
       }
       var pong = P.decodePong(ev.data);
@@ -399,22 +478,35 @@
       wsState = 'closed'; wsInfo = P.closeMessage(ev.code);
       log('ws close code=' + ev.code + ' reason="' + ev.reason + '"');
       stopTimers(); ws = null;
-      if (ev.code !== P.CLOSE.TAKEN_OVER && ev.code !== P.CLOSE.VERSION && ev.code !== P.CLOSE.BAD_TOKEN) scheduleReconnect();
+      if (probeTimer) { clearTimeout(probeTimer); probeTimer = null; }
+      if (ev.code === P.CLOSE.TAKEN_OVER) {
+        if (!AUTO_CONNECT) return;
+        wsState = 'waiting (taken over)'; wsInfo = 'reconnects when the pads are free';
+        log('taken over; reconnecting when the pads are free');
+        scheduleReconnect('resume', BUSY_MS);
+        return;
+      }
+      if (ev.code === P.CLOSE.VERSION || ev.code === P.CLOSE.BAD_TOKEN) return;
+      scheduleReconnect(wsMode === 'takeover' ? 'reconnect' : wsMode, RETRY_MS);
     };
   }
 
   function wsStop() {
     if (wsReconnectTimer) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; }
+    if (probeTimer) { clearTimeout(probeTimer); probeTimer = null; }
     stopTimers();
     if (ws) { try { ws.onclose = null; ws.close(); } catch (e) { /* ignore */ } ws = null; }
   }
-  function scheduleReconnect() { if (PC_HOST && !wsReconnectTimer) wsReconnectTimer = setTimeout(function () { wsReconnectTimer = null; wsStart(); }, 2000); }
+  function scheduleReconnect(mode, delay) {
+    if (PC_HOST && !wsReconnectTimer) wsReconnectTimer = setTimeout(function () { wsReconnectTimer = null; wsStart(mode); }, delay);
+  }
   function stopTimers() { if (pingTimer) clearInterval(pingTimer); if (hbTimer) clearInterval(hbTimer); pingTimer = hbTimer = null; }
 
   function wsReady() {
     lastSent = {}; lastSentAt = {}; announced = {};
     pingTimer = setInterval(function () {
       if (ws && ws.readyState === 1) { ws.send(P.encodePing(++pingId, performance.now())); pingsSent++; }
+      drainRemote();
     }, PING_MS);
     // Heartbeat/forward loop on a timer so STATE keeps flowing at 50 ms even if rAF were throttled.
     hbTimer = setInterval(forwardStates, SEND_HEARTBEAT_MS);
@@ -437,6 +529,20 @@
       }
     }
   }
+
+  // Status line for the daemon log (not the on-screen log, which it would flood).
+  function statusLine() {
+    var pads = getPads(), names = [];
+    if (pads) for (var i = 0; i < pads.length; i++) if (pads[i]) names.push(i + ':' + pads[i].mapping);
+    var r2 = median(rtts);
+    return 'status hidden=' + document.hidden + ' rAF/s=' + rafPerSec + ' timer/s=' + timerPerSec +
+      ' padUpd/s=' + gpUpdatesPerSec + ' pads=[' + names.join(' ') + '] video=' + (videoShown ? zPos : 'off') +
+      ' res=' + resInfo + ' STATE=' + statesSent + ' RTTmed=' + (r2 === null ? '-' : r2.toFixed(1)) + 'ms' +
+      ' steps=' + STEP_ORDER.map(function (n) { return steps[n].status.charAt(0); }).join('');
+  }
+  setInterval(function () {
+    if (ws && ws.readyState === 1 && wsState.indexOf('welcome') === 0) remote('[' + ts() + '] ' + statusLine());
+  }, STATUS_MS);
 
   function median(a) { if (!a.length) return null; var b = a.slice().sort(function (x, y) { return x - y; }); return b[Math.floor(b.length / 2)]; }
 
@@ -509,13 +615,21 @@
     readSources();
   }
 
+  // PC address: setPcHost() override, else local-config.js, else the last PC that welcomed us.
   try {
     var h = localStorage.getItem('ghostpad.spike.host'); if (h) PC_HOST = h;
     var t = localStorage.getItem('ghostpad.spike.token'); if (t) PC_TOKEN = t;
+    if (!PC_HOST) {
+      var lastPc = JSON.parse(localStorage.getItem(LAST_PC_KEY) || 'null');
+      if (lastPc && lastPc.host) {
+        PC_HOST = lastPc.host; PC_PORT = lastPc.port || PC_PORT; if (!PC_TOKEN) PC_TOKEN = lastPc.token || '';
+        log('no PC configured; using the last PC that answered: ' + PC_HOST + ':' + PC_PORT);
+      }
+    }
   } catch (e) { /* ignore */ }
 
   applyOverlayMode();
   requestAnimationFrame(frame);
   start();
-  wsStart();
+  wsStart('takeover');  // launching the app is a user action: take the pads
 })();

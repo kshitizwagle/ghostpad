@@ -95,6 +95,7 @@ audio, and Game Mode/lag. Failures are recorded as blockers with alternatives.
 - [ ] Port the M2 client logic into the Tizen app
 - [ ] Config screen for PC IP, port and token; persisted locally
 - [ ] Auto-reconnect with backoff
+- [x] Auto-connect to the remembered PC without taking the pads from another client: pre-hello `probe`/`status`, takeover only on a user action, resume after 4001 (DESIGN.md "Reconnecting"; web client and spike; tested with fakes and by hand against the mock daemon)
 - [ ] HDMI source select
 - [ ] Minimal overlay: connection state and optional RTT
 - [ ] Sideload instructions in `docs/` (without any signing material)

@@ -184,7 +184,7 @@ with `start /min` while debugging. Startup-folder items run at user logon only.
 | Pad shows in `joy.cpl` but a game ignores it | Game wants XInput: the virtual pad is X360, so it should work. Check Steam Input (below), and that the game is not set to a different controller index |
 | Double inputs or phantom second pad in Steam games | Steam Input also maps the real controller on the PC, or Steam wraps the virtual pad. In Steam: Settings > Controller, disable "Enable Steam Input for Xbox controllers" or disable the real controller, so only the ghostpad pad is active. Do not run the real pad and ghostpad into the same game |
 | Input stops after a few seconds with the tab in the background | Browsers throttle hidden tabs; the watchdog releases to neutral by design. Keep the tab visible, or use the Tizen app |
-| Another client "takes over" unexpectedly | One client owns the pads; a new connection closes the old one (code 4001) |
+| Another client "takes over" unexpectedly | One client owns the pads; a new `hello` closes the old one (code 4001). Only a user action sends one over an owner (web **Connect**, launching the TV app); automatic reconnects wait for free pads |
 | Connection refused with a token set | Token mismatch: connect with `?token=SECRET` or the token field |
 
 ## Not verified

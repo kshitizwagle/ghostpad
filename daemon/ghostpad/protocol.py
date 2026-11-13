@@ -154,6 +154,49 @@ def hello_version_ok(hello: dict) -> bool:
     return type(v) is int and v == PROTOCOL_VERSION
 
 
+CLIENT_LOG_MAX = 500  # chars kept of a client log message
+
+
+def encode_client_log(msg: str) -> str:
+    return json.dumps({"type": "log", "msg": msg})
+
+
+def parse_client_log(text: str) -> str | None:
+    """Message of a {"type":"log","msg":str} object, else None.
+
+    Truncated to CLIENT_LOG_MAX chars; non-printable chars (newlines included) are
+    escaped so a client cannot forge daemon log lines.
+    """
+    try:
+        obj = json.loads(text)
+    except ValueError:
+        return None
+    if not (isinstance(obj, dict) and obj.get("type") == "log" and isinstance(obj.get("msg"), str)):
+        return None
+    msg = obj["msg"][:CLIENT_LOG_MAX]
+    if msg.isprintable():
+        return msg
+    return "".join(c if c.isprintable() else repr(c)[1:-1] for c in msg)
+
+
+def encode_probe() -> str:
+    return json.dumps({"type": "probe"})
+
+
+def is_probe(text: str) -> bool:
+    """True for {"type":"probe"}: a reconnecting client asking who owns the pads (pre-hello)."""
+    try:
+        obj = json.loads(text)
+    except ValueError:
+        return False
+    return isinstance(obj, dict) and obj.get("type") == "probe"
+
+
+def encode_status(owner: str | None) -> str:
+    """Reply to a probe: the current owner's client name, or null if the pads are free."""
+    return json.dumps({"type": "status", "version": PROTOCOL_VERSION, "owner": owner})
+
+
 def encode_welcome(backend: str, max_pads: int = MAX_PADS) -> str:
     return json.dumps(
         {"type": "welcome", "version": PROTOCOL_VERSION, "backend": backend, "max_pads": max_pads}

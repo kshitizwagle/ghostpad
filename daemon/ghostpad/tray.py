@@ -90,10 +90,10 @@ def autostart_command(exe: str, args: argparse.Namespace) -> str:
 
 
 def web_menu_label(status: dict | None) -> str:
-    """The web client takes the pads on connect (newest client wins), so say so."""
+    """Name the current owner: the page connects on load only when the pads are free."""
     client = status.get("client") if status else None
     if client:
-        return f"Open web test client (takes over from {client[:40]})"
+        return f"Open web test client ({client[:40]} has the pads)"
     return "Open web test client"
 
 

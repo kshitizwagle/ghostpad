@@ -2,7 +2,7 @@
 import {
   MAX_PADS, XB, decodePong, decodeRumble, encodePadGone, encodePing, encodeState, mapGamepad, messageType, MSG, statesEqual,
 } from './protocol.js';
-import { Transport, buildUrl, initialConfig, persistConfig } from './transport.js';
+import { Transport, buildUrl, initialConfig, lsGet, lsSet, persistConfig } from './transport.js';
 import { LatencyTracker, PING_INTERVAL_MS, PollStats, exportStats } from './latency.js';
 import { heartbeatDue } from './sendpolicy.js';
 import { makeScheduler, normalizePollMode } from './schedulers.js';
@@ -27,15 +27,31 @@ if (!hasGamepadApi || !secure) {
 }
 
 // ---- transport -----------------------------------------------------------
-const transport = new Transport({ clientName: 'ghostpad-web' });
+// Automatic connects (page load, after a takeover) need a controller to forward; `pads` is
+// declared below and only read once the module has run.
+const transport = new Transport({
+  clientName: 'ghostpad-web',
+  canResume: () => [...pads.values()].some((p) => !p.ignored),
+});
 const cfg = initialConfig();
 $('host').value = cfg.host;
 $('token').value = cfg.token;
 
+// Auto-connect (default on, remembered): connect on load and come back after a takeover,
+// both only when no other client owns the pads. Off: connect only with the Connect button.
+const LS_AUTO = 'ghostpad.auto';
+$('auto').checked = lsGet(LS_AUTO) !== '0';
+transport.setAuto($('auto').checked);
+$('auto').addEventListener('change', () => {
+  lsSet(LS_AUTO, $('auto').checked ? '1' : '0');
+  transport.setAuto($('auto').checked);
+});
+
 transport.addEventListener('status', (ev) => {
   const d = ev.detail;
   $('status').dataset.state = d.state;
-  $('status-text').textContent = d.message;
+  $('status-text').textContent = d.message +
+    (d.state === 'waiting' && d.owner ? ' Press Connect to take them over.' : '');
   $('backend').textContent = d.state === 'ready' ? d.backend : '';
 });
 // After every (re)handshake, force a full STATE for each present pad.
@@ -298,5 +314,8 @@ function statsJson() {
 $('lat-copy').addEventListener('click', () => copyText(statsJson(), $('lat-json'), $('lat-copy-msg')));
 $('lat-reset').addEventListener('click', () => { lat.reset(); pollStats.reset(); $('lat-copy-msg').textContent = ''; });
 
-// Auto-connect when configured via URL / storage, or by default when served over http(s).
-if (location.protocol.startsWith('http')) doConnect();
+// Auto-connect on load (served over http(s)) to the remembered PC, without taking the pads
+// from another client: it waits for a controller and for the pads to be free.
+if (location.protocol.startsWith('http') && $('auto').checked) {
+  transport.autoConnect(buildUrl(cfg.host, cfg.token));
+}
