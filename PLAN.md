@@ -15,7 +15,7 @@ Status: **M0 in progress.**
 | ID | Name | Outcome | Status |
 |---|---|---|---|
 | M0 | Bootstrap | Repo docs (PRODUCT, DESIGN, PLAN, CLAUDE) | Done |
-| M1 | Windows daemon | WS server, protocol decode, PadBackend (vigem + mock), watchdog, CLI, tests without Windows | Not started |
+| M1 | Windows daemon | WS server, protocol decode, PadBackend (vigem + mock), watchdog, CLI, tests without Windows | Done |
 | M2 | Browser test client | Static page: Gamepad API to STATE, connection status, live pad view | Not started |
 | M3 | Latency measurement | PING/PONG, HUD stats, daemon histograms, bench script, button-to-photon doc | Not started |
 | M4 | Tizen spike (go/no-go) | Sideloadable app showing HDMI via tvwindow with gamepad overlay; feasibility verdict | Not started |
@@ -38,27 +38,27 @@ Exit criteria: all four docs are on `main` and consistent with each other.
 
 ## M1 — Windows daemon
 
-- [ ] Package skeleton `daemon/ghostpad/` and `daemon/tests/`
-- [ ] Hand-written RFC 6455 server (handshake, framing, masking, ping/close) on `asyncio`
-- [ ] HTTP GET static serving from `client/web/` and `/ws` upgrade on one port
-- [ ] `protocol.py`: encode/decode STATE, PING, PONG, PAD_GONE; JSON hello/welcome; close 4000
-- [ ] `PadBackend` ABC with `mock` and `vigem` (lazy `vgamepad` import)
-- [ ] Session logic: wrap-aware seq filter, ownership takeover (4001), `--token` check
-- [ ] Watchdog: 200 ms neutral, close then unplug, clean shutdown
-- [ ] CLI: `python -m ghostpad --port --bind --backend --token --verbose`
+- [x] Package skeleton `daemon/ghostpad/` and `daemon/tests/`
+- [x] Hand-written RFC 6455 server (handshake, framing, masking, ping/close) on `asyncio`
+- [x] HTTP GET static serving from `client/web/` and `/ws` upgrade on one port
+- [x] `protocol.py`: encode/decode STATE, PING, PONG, PAD_GONE; JSON hello/welcome; close 4000
+- [x] `PadBackend` ABC with `mock` and `vigem` (lazy `vgamepad` import)
+- [x] Session logic: wrap-aware seq filter, ownership takeover (4001), `--token` check
+- [x] Watchdog: 200 ms neutral, close then unplug, clean shutdown
+- [x] CLI: `python -m ghostpad --port --bind --backend --token --verbose`
 
 Exit criteria: unit tests pass on Linux and Windows with the `mock` backend; on
 Windows a real game sees a virtual X360 pad driven by a hand-made client.
 
 ## M2 — Browser test client
 
-- [ ] `client/web/index.html` + plain ES modules, no build step
-- [ ] Gamepad "standard" mapping to STATE per `DESIGN.md`
-- [ ] Send policy: rAF polling, send on change, 50 ms heartbeat, per-pad `seq`
-- [ ] `hello`/`welcome` handshake, connection status, auto-reconnect
-- [ ] PAD_GONE on controller disconnect
-- [ ] Live visualisation of buttons, triggers and sticks
-- [ ] Config via URL (`?host=&token=`); document the secure-context limitation
+- [x] `client/web/index.html` + plain ES modules, no build step
+- [x] Gamepad "standard" mapping to STATE per `DESIGN.md`
+- [x] Send policy: rAF polling, send on change, 50 ms heartbeat, per-pad `seq`
+- [x] `hello`/`welcome` handshake, connection status, auto-reconnect
+- [x] PAD_GONE on controller disconnect
+- [x] Live visualisation of buttons, triggers and sticks
+- [x] Config via URL (`?host=&token=`); document the secure-context limitation
 
 Exit criteria: a controller connected to a Chromium browser on `localhost` drives a
 virtual pad that shows up in a Windows game controller tester.

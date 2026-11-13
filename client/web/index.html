@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ghostpad</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>ghostpad</h1>
+  <div id="status" class="status" data-state="idle" role="status" aria-live="polite">
+    <span class="dot"></span>
+    <span id="status-text">Not connected</span>
+    <span id="backend" class="backend"></span>
+  </div>
+</header>
+
+<div id="banner-env" class="banner error" hidden></div>
+<div id="banner-resume" class="banner warn" hidden></div>
+
+<section id="connect">
+  <label>Host <input id="host" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="same host as this page"></label>
+  <label>Token <input id="token" type="text" spellcheck="false" autocomplete="off" placeholder="optional"></label>
+  <button id="connect-btn" type="button">Connect</button>
+  <button id="disconnect-btn" type="button">Disconnect</button>
+</section>
+
+<section id="stats">
+  <div><span class="k">Packets sent</span><span id="sent" class="v">0</span></div>
+  <div><span class="k">Send rate</span><span id="rate" class="v">0</span><span class="u">/s</span></div>
+  <div><span class="k">Pads</span><span id="padcount" class="v">0</span></div>
+</section>
+
+<section id="pads" aria-label="Connected controllers">
+  <p id="nopads" class="hint">No controller detected. Press any button on the controller (browsers hide it until first input).</p>
+</section>
+
+<!-- M3 latency HUD goes here (RTT min/median/p95/p99, jitter). Intentionally empty. -->
+<section id="latency"></section>
+
+<script type="module" src="main.js"></script>
+</body>
+</html>
